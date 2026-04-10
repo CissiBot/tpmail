@@ -1,6 +1,8 @@
 export type ProviderId =
   | "catchmail"
   | "maildrop"
+  | "inboxes"
+  | "mail_tm"
   | "duckmail"
   | "tempmail_lol"
   | "temp_mail_io";

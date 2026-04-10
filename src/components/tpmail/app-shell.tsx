@@ -6,11 +6,11 @@ import {
   MailboxSession,
   MessageDetail,
   MessageSummary,
-  ProviderDomainOption,
   ProviderDescriptor,
+  ProviderDomainOption,
   ProviderId,
 } from "@/lib/tpmail/types";
-import { formatRelativeExpiry } from "@/lib/tpmail/utils";
+import { formatRelativeExpiry, randomLocalPart } from "@/lib/tpmail/utils";
 
 type ErrorLike = {
   error?: {
@@ -18,38 +18,79 @@ type ErrorLike = {
   };
 };
 
-function Badge({
-  children,
-  tone = "neutral",
-}: {
-  children: React.ReactNode;
-  tone?: "neutral" | "accent" | "danger" | "success";
-}) {
-  const tones = {
-    neutral: "border-white/10 bg-white/6 text-slate-300",
-    accent: "border-emerald-400/30 bg-emerald-400/12 text-emerald-100",
-    danger: "border-amber-400/30 bg-amber-400/12 text-amber-100",
-    success: "border-emerald-400/30 bg-emerald-400/12 text-emerald-100",
-  };
+type IconProps = {
+  className?: string;
+};
 
+function InboxIcon({ className = "h-5 w-5" }: IconProps) {
   return (
-    <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-medium ${tones[tone]}`}>
-      {children}
-    </span>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className} aria-hidden="true">
+      <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5Z" />
+      <path d="m5 8 7 5 7-5" />
+    </svg>
   );
 }
 
-function SectionEyebrow({ children }: { children: React.ReactNode }) {
-  return <p className="font-mono text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">{children}</p>;
+function RefreshIcon({ className = "h-5 w-5" }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className} aria-hidden="true">
+      <path d="M20 5v5h-5" />
+      <path d="M20 10a8 8 0 0 0-14.2-4.8" />
+      <path d="M4 19v-5h5" />
+      <path d="M4 14a8 8 0 0 0 14.2 4.8" />
+    </svg>
+  );
 }
 
-function StatCard({ label, value, detail }: { label: string; value: string; detail: string }) {
+function CopyIcon({ className = "h-4 w-4" }: IconProps) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3.5">
-      <p className="text-[11px] text-slate-400">{label}</p>
-      <p className="mt-1.5 text-xl font-semibold tracking-tight text-white">{value}</p>
-      <p className="mt-1.5 line-clamp-2 text-[11px] leading-5 text-slate-500">{detail}</p>
-    </div>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className} aria-hidden="true">
+      <rect x="9" y="9" width="10" height="10" rx="2" />
+      <path d="M5 15V7a2 2 0 0 1 2-2h8" />
+    </svg>
+  );
+}
+
+function DotIcon({ className = "h-2.5 w-2.5" }: IconProps) {
+  return <span className={`inline-block rounded-full bg-current ${className}`} aria-hidden="true" />;
+}
+
+function ExternalIcon({ className = "h-4 w-4" }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className} aria-hidden="true">
+      <path d="M14 5h5v5" />
+      <path d="M10 14 19 5" />
+      <path d="M19 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
+    </svg>
+  );
+}
+
+function PaperclipIcon({ className = "h-4 w-4" }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className} aria-hidden="true">
+      <path d="m21 11-8.6 8.6a5 5 0 1 1-7.1-7.1L14 3.8a3.5 3.5 0 0 1 5 5L9.7 18.1a2 2 0 1 1-2.8-2.8l8.5-8.5" />
+    </svg>
+  );
+}
+
+function ShuffleIcon({ className = "h-4 w-4" }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className} aria-hidden="true">
+      <path d="M16 3h4v4" />
+      <path d="M4 20 20 4" />
+      <path d="M20 14v6h-6" />
+      <path d="m15 15 5 5" />
+      <path d="M4 4h5l3 3" />
+    </svg>
+  );
+}
+
+function EmptyMailIcon({ className = "h-12 w-12" }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={className} aria-hidden="true">
+      <rect x="4" y="6" width="16" height="12" rx="2.5" />
+      <path d="m5 8 7 5 7-5" />
+    </svg>
   );
 }
 
@@ -68,9 +109,119 @@ function formatAccessMode(mode: MailboxSession["accessMode"]) {
   }
 }
 
+function getInitialProvider(providers: ProviderDescriptor[]) {
+  const preferred = providers.find((provider) => provider.id === "duckmail" && provider.enabled);
+  if (preferred) {
+    return preferred.id;
+  }
+
+  return providers.find((provider) => provider.enabled)?.id ?? providers[0]?.id ?? "catchmail";
+}
+
+function getTierAccent(provider: ProviderDescriptor) {
+  if (!provider.enabled) {
+    return "text-stone-500";
+  }
+
+  switch (provider.tier) {
+    case "L1":
+      return "text-emerald-300";
+    case "L2":
+      return "text-sky-300";
+    case "L3":
+      return "text-amber-300";
+    default:
+      return "text-stone-300";
+  }
+}
+
+function getTierBadge(provider: ProviderDescriptor) {
+  if (!provider.enabled) {
+    return "border-white/8 bg-white/[0.03] text-stone-500";
+  }
+
+  switch (provider.tier) {
+    case "L1":
+      return "border-emerald-400/20 bg-emerald-400/10 text-emerald-200";
+    case "L2":
+      return "border-sky-400/20 bg-sky-400/10 text-sky-200";
+    case "L3":
+      return "border-amber-400/20 bg-amber-400/10 text-amber-200";
+    default:
+      return "border-white/8 bg-white/[0.03] text-stone-300";
+  }
+}
+
+function getAvailabilityBadge(provider: ProviderDescriptor) {
+  return provider.enabled
+    ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-200"
+    : "border-red-400/15 bg-red-400/8 text-red-200";
+}
+
+function SidebarAction({
+  active = false,
+  children,
+  icon,
+  onClick,
+  disabled = false,
+}: {
+  active?: boolean;
+  children: React.ReactNode;
+  icon: React.ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`flex min-h-14 w-full items-center gap-3 rounded-2xl px-4 text-left text-base transition ${
+        active
+          ? "bg-[#1d1f47] text-[#7cc0ff]"
+          : "text-slate-200 hover:bg-white/[0.03] disabled:cursor-not-allowed disabled:text-slate-500"
+      }`}
+    >
+      <span className={active ? "text-[#7cc0ff]" : "text-slate-300"}>{icon}</span>
+      <span>{children}</span>
+    </button>
+  );
+}
+
+function Pill({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex min-h-8 items-center rounded-full border border-white/8 bg-white/[0.02] px-3 text-xs font-medium text-stone-400">
+      {children}
+    </span>
+  );
+}
+
+function EmptyState({
+  title,
+  description,
+  action,
+}: {
+  title: string;
+  description: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-1 items-center justify-center px-6 py-10">
+      <div className="flex max-w-xl flex-col items-center text-center">
+        <div className="flex h-24 w-24 items-center justify-center rounded-full bg-white/[0.015] text-stone-300">
+          <EmptyMailIcon className="h-14 w-14" />
+        </div>
+        <h2 className="mt-7 text-[32px] font-semibold tracking-tight text-stone-100">{title}</h2>
+        <p className="mt-4 text-base leading-8 text-stone-400">{description}</p>
+        {action ? <div className="mt-8">{action}</div> : null}
+      </div>
+    </div>
+  );
+}
+
 export function AppShell({ initialProviders }: { initialProviders: ProviderDescriptor[] }) {
   const [providers] = useState(initialProviders);
-  const [selectedProvider, setSelectedProvider] = useState<ProviderId>("catchmail");
+  const [selectedProvider, setSelectedProvider] = useState<ProviderId>(() => getInitialProvider(initialProviders));
   const [mailbox, setMailbox] = useState<MailboxSession | null>(null);
   const [messages, setMessages] = useState<MessageSummary[]>([]);
   const [activeMessage, setActiveMessage] = useState<MessageDetail | null>(null);
@@ -78,28 +229,21 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingMessageId, setLoadingMessageId] = useState<string | null>(null);
   const [loadingDomains, setLoadingDomains] = useState(false);
-  const [notice, setNotice] = useState<string>("先选择一个 provider，再生成临时邮箱地址。系统会自动轮询收件箱。 ");
+  const [notice, setNotice] = useState<string>("选择一个聚合源，然后创建临时邮箱地址。系统会自动轮询收件箱。 ");
   const [aliasInput, setAliasInput] = useState("");
   const [domainOptions, setDomainOptions] = useState<ProviderDomainOption[]>([]);
   const [selectedDomain, setSelectedDomain] = useState("");
 
-  const enabledProviders = useMemo(() => providers.filter((item) => item.enabled), [providers]);
   const selectedProviderMeta = useMemo(
     () => providers.find((provider) => provider.id === selectedProvider) ?? providers[0],
     [providers, selectedProvider]
   );
 
-  const detailEmptyMessage = useMemo(() => {
-    if (!mailbox) {
-      return "先生成地址，再从左侧选择一封邮件打开。";
-    }
-
-    if (messages.length === 0) {
-      return "当前会话还没有收到邮件。保持页面打开，系统会继续自动轮询。";
-    }
-
-    return "从左侧消息列表选择一封邮件，右侧会立即展开完整内容。";
-  }, [mailbox, messages.length]);
+  const enabledProviders = useMemo(() => providers.filter((provider) => provider.enabled), [providers]);
+  const otherProviders = useMemo(
+    () => providers.filter((provider) => provider.id !== selectedProvider),
+    [providers, selectedProvider]
+  );
 
   function resetWorkspace(nextProvider: ProviderDescriptor) {
     setSelectedProvider(nextProvider.id);
@@ -109,12 +253,15 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
     setSelectedDomain("");
     setNotice(
       nextProvider.enabled
-        ? `已切换到 ${nextProvider.name}，请重新生成一个邮箱地址。`
+        ? `已切换到 ${nextProvider.name}，现在可以创建新的临时邮箱。`
         : `${nextProvider.name} 当前未启用，暂时不能创建会话。`
     );
   }
 
-  async function createMailboxSession(provider: ProviderId) {
+  async function createMailboxSession(provider: ProviderId, overrides?: { alias?: string; domain?: string }) {
+    const nextAlias = overrides?.alias ?? (aliasInput.trim() || undefined);
+    const nextDomain = overrides?.domain ?? (selectedDomain || undefined);
+
     setBusy(true);
     setNotice("正在创建邮箱地址...");
     setMailbox(null);
@@ -129,8 +276,8 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
         },
         body: JSON.stringify({
           provider,
-          alias: aliasInput.trim() || undefined,
-          domain: selectedDomain || undefined,
+          alias: nextAlias,
+          domain: nextDomain,
         }),
       });
       const data = (await response.json()) as { mailbox?: MailboxSession } & ErrorLike;
@@ -146,6 +293,18 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
     } finally {
       setBusy(false);
     }
+  }
+
+  function applyRandomAlias() {
+    setAliasInput(randomLocalPart());
+  }
+
+  function createRandomMailbox() {
+    const alias = randomLocalPart();
+    setAliasInput(alias);
+    void createMailboxSession(selectedProvider, {
+      alias,
+    });
   }
 
   const refreshMessages = useCallback(
@@ -166,10 +325,19 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
           throw new Error(data.error?.message ?? "收件箱拉取失败");
         }
 
-        setMessages(data.messages);
+        const nextMessages = data.messages;
+
+        setMessages(nextMessages);
+        setActiveMessage((current) => {
+          if (!current) {
+            return current;
+          }
+
+          return nextMessages.some((item) => item.id === current.id) ? current : null;
+        });
         setNotice(
-          data.messages.length > 0
-            ? `已同步 ${data.messages.length} 封邮件。`
+          nextMessages.length > 0
+            ? `已同步 ${nextMessages.length} 封邮件。`
             : "收件箱当前为空，系统会继续自动刷新。"
         );
       } catch (error) {
@@ -203,6 +371,19 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
       setNotice(error instanceof Error ? error.message : "邮件读取失败");
     } finally {
       setLoadingMessageId(null);
+    }
+  }
+
+  async function copyAddress() {
+    if (!mailbox) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(mailbox.address.address);
+      setNotice("邮箱地址已复制到剪贴板。");
+    } catch {
+      setNotice("复制邮箱地址失败，请手动复制。");
     }
   }
 
@@ -244,14 +425,15 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
           return;
         }
 
-        setDomainOptions(data.domains);
+        const nextDomains = data.domains;
+
+        setDomainOptions(nextDomains);
         setSelectedDomain((current) => {
-          if (data.domains?.some((item) => item.domain === current)) {
+          if (nextDomains.some((item) => item.domain === current)) {
             return current;
           }
 
-          const fallback = data.domains?.find((item) => item.isDefault)?.domain ?? data.domains?.[0]?.domain ?? "";
-          return fallback;
+          return nextDomains.find((item) => item.isDefault)?.domain ?? nextDomains[0]?.domain ?? "";
         });
       } catch (error) {
         if (!cancelled) {
@@ -274,286 +456,399 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
   }, [selectedProviderMeta]);
 
   return (
-    <div className="h-dvh overflow-hidden bg-[#07090c] text-slate-100">
-      <div className="mx-auto flex h-dvh w-full max-w-[1600px] flex-col px-4 py-4 sm:px-6 lg:px-8 lg:py-5">
-        <header className="mb-4 rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(13,17,23,0.98),rgba(10,13,18,0.94))] px-4 py-4 shadow-[0_18px_56px_rgba(0,0,0,0.34)] sm:px-5">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-            <div className="min-w-0 space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="inline-flex h-9 items-center rounded-full border border-emerald-400/25 bg-emerald-400/10 px-4 text-sm font-semibold tracking-tight text-emerald-100">
-                  TPMail
-                </span>
-                <Badge tone="success">{enabledProviders.length} 个在线</Badge>
-                <Badge>{mailbox ? formatAccessMode(mailbox.accessMode) : "等待会话"}</Badge>
-                <Badge>{loadingMessages ? "同步中" : "15s 轮询"}</Badge>
+    <div className="min-h-dvh bg-[#1d1f20] text-stone-100">
+      <div className="flex min-h-dvh flex-col lg:flex-row">
+        <aside className="w-full shrink-0 border-b border-white/10 bg-[#191b1c] lg:flex lg:h-dvh lg:w-[288px] lg:flex-col lg:border-b-0 lg:border-r">
+          <div className="border-b border-white/10 px-5 py-5">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#27292b] text-[#f5c95f]">
+                <InboxIcon className="h-4.5 w-4.5" />
               </div>
-
-              <div className="flex flex-wrap gap-2.5">
-                {providers.map((provider) => {
-                  const active = provider.id === selectedProvider;
-
-                  return (
-                    <button
-                      key={provider.id}
-                      type="button"
-                      onClick={() => resetWorkspace(provider)}
-                      aria-disabled={!provider.enabled}
-                      className={`inline-flex items-center gap-2 rounded-full border px-3.5 py-2 font-mono text-[13px] transition ${
-                        active
-                          ? "border-emerald-400/45 bg-emerald-400/12 text-white"
-                          : provider.enabled
-                            ? "border-white/10 bg-white/[0.04] text-slate-300 hover:border-white/18 hover:bg-white/[0.08]"
-                            : "border-white/8 bg-white/[0.02] text-slate-500 opacity-55"
-                      }`}
-                    >
-                      <span className="font-medium">{provider.name}</span>
-                      <span className="text-[11px] text-slate-400">{provider.enabled ? provider.tier : "关闭"}</span>
-                    </button>
-                  );
-                })}
+              <div>
+                <p className="text-[15px] font-semibold tracking-tight text-stone-100">TPMail</p>
+                <p className="text-sm text-stone-400">临时邮箱聚合</p>
               </div>
-            </div>
-
-            <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1.25fr)_210px_210px_auto_auto] xl:min-w-[980px]">
-              <div className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3">
-                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">当前地址</p>
-                <p className="mt-2 truncate font-mono text-sm text-white sm:text-[15px]">{mailbox?.address.address ?? "尚未生成地址"}</p>
-                <p className="mt-2 text-xs text-slate-400">{mailbox ? formatRelativeExpiry(mailbox.expiresAt) : selectedProviderMeta.limitations[0]}</p>
-              </div>
-
-              <label className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3">
-                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">邮箱前缀</p>
-                <input
-                  value={aliasInput}
-                  onChange={(event) => setAliasInput(event.target.value.replace(/[^a-zA-Z0-9._-]/g, ""))}
-                  placeholder="例如 inbox-demo"
-                  className="mt-2 w-full bg-transparent text-sm text-white outline-none placeholder:text-slate-500"
-                />
-              </label>
-
-              <label className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-3">
-                <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">邮箱后缀</p>
-                <select
-                  value={selectedDomain}
-                  onChange={(event) => setSelectedDomain(event.target.value)}
-                  disabled={loadingDomains || domainOptions.length === 0}
-                  className="mt-2 w-full bg-transparent text-sm text-white outline-none disabled:cursor-not-allowed disabled:text-slate-500"
-                >
-                  {domainOptions.length === 0 ? (
-                    <option value="">{loadingDomains ? "载入中..." : "自动分配 / 固定域名"}</option>
-                  ) : (
-                    domainOptions.map((option) => (
-                      <option key={`${option.provider}:${option.domain}`} value={option.domain} className="bg-[#0d1117] text-white">
-                        {option.label}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-
-              <button
-                type="button"
-                onClick={() => createMailboxSession(selectedProvider)}
-                disabled={busy || !selectedProviderMeta.enabled}
-                className="rounded-xl bg-[linear-gradient(135deg,#22c55e,#16a34a)] px-4 py-3 text-sm font-semibold text-[#03120a] shadow-[0_16px_38px_rgba(22,163,74,0.25)] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                {busy
-                  ? "创建中..."
-                  : !selectedProviderMeta.enabled
-                    ? "未启用"
-                    : mailbox
-                      ? "重建地址"
-                      : "生成地址"}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => refreshMessages()}
-                disabled={!mailbox || loadingMessages}
-                className="rounded-xl border border-white/12 bg-white/[0.05] px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {loadingMessages ? "同步中..." : "刷新"}
-              </button>
             </div>
           </div>
 
-            <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1.7fr)_minmax(0,0.9fr)_minmax(0,0.9fr)]">
-              <div className="rounded-xl border border-white/8 bg-white/[0.03] px-4 py-2.5 text-sm text-slate-400 lg:col-span-2">
-                {notice}
-              </div>
-            <StatCard label="收件箱状态" value={messages.length > 0 ? `${messages.length} 封` : "空箱"} detail={loadingMessages ? "正在同步最新消息。" : "消息区会在下方实时更新。"} />
-            <StatCard label="后缀来源" value={selectedDomain || "自动"} detail={domainOptions.length > 0 ? `已加载 ${domainOptions.length} 个可用域名。` : "当前 provider 没有可选后缀列表。"} />
-          </div>
-        </header>
-
-        <main className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[400px_minmax(0,1fr)]">
-          <section className="min-h-0 rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(16,21,29,0.98),rgba(11,15,20,0.94))] p-4 shadow-[0_18px_56px_rgba(0,0,0,0.28)] lg:p-5">
-            <div className="mb-3 flex items-end justify-between gap-3 border-b border-white/8 pb-3">
-              <div>
-                <SectionEyebrow>收件箱</SectionEyebrow>
-                <h2 className="mt-1.5 text-lg font-semibold text-white">消息列表</h2>
-              </div>
-              <div className="flex gap-2">
-                <Badge>{messages.length} 封</Badge>
-                <Badge>{mailbox ? selectedProviderMeta.name : "未创建"}</Badge>
-              </div>
+          <div className="flex min-h-0 flex-1 flex-col px-5 py-5">
+            <div className="shrink-0 space-y-2">
+              <SidebarAction active icon={<InboxIcon />}>
+                收件箱
+              </SidebarAction>
+              <SidebarAction onClick={() => refreshMessages()} disabled={!mailbox || loadingMessages} icon={<RefreshIcon />}>
+                {loadingMessages ? "刷新中" : "刷新"}
+              </SidebarAction>
             </div>
 
-            <div className="h-[calc(100%-4.5rem)] overflow-auto pr-1">
-              <div className="space-y-3">
-                {messages.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-white/12 bg-white/[0.03] px-5 py-10 text-sm leading-7 text-slate-400">
-                    {mailbox ? "当前会话还没有收到邮件，保持页面打开即可继续自动轮询。" : "先在顶部生成地址，消息列表就会开始工作。"}
-                  </div>
-                ) : (
-                  messages.map((message) => {
-                    const active = activeMessage?.id === message.id;
-
-                    return (
-                      <button
-                        key={message.id}
-                        type="button"
-                        onClick={() => openMessage(message.id)}
-                        className={`w-full rounded-xl border p-4 text-left transition ${
-                          active
-                            ? "border-emerald-400/35 bg-[linear-gradient(135deg,rgba(34,197,94,0.10),rgba(11,15,20,0.92))] shadow-[0_14px_30px_rgba(34,197,94,0.08)]"
-                            : "border-white/10 bg-white/[0.03] hover:border-white/18 hover:bg-white/[0.05]"
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0 space-y-1.5">
-                            <p className="truncate text-sm font-semibold text-white">{message.subject}</p>
-                            <p className="truncate text-xs text-slate-400">{message.from}</p>
-                          </div>
-                          <span className="shrink-0 rounded-full border border-white/8 bg-white/[0.04] px-2 py-1 font-mono text-[11px] text-slate-400">
-                            {message.receivedAt
-                              ? new Date(message.receivedAt).toLocaleTimeString("zh-CN", {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })
-                              : "--:--"}
-                          </span>
-                        </div>
-                        {message.snippet ? <p className="mt-3 line-clamp-2 text-sm leading-6 text-slate-300">{message.snippet}</p> : null}
-                      </button>
-                    );
-                  })
-                )}
+            <section className="mt-7 flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="mb-3 flex shrink-0 items-center justify-between text-xs uppercase tracking-[0.18em] text-stone-500">
+                <span>聚合源</span>
+                <span>{enabledProviders.length} 个在线</span>
               </div>
-            </div>
-          </section>
 
-          <section className="min-h-0 rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(16,21,29,0.98),rgba(11,15,20,0.94))] p-4 shadow-[0_18px_56px_rgba(0,0,0,0.28)] lg:p-5">
-            <div className="mb-3 flex items-end justify-between gap-3 border-b border-white/8 pb-3">
-              <div>
-                <SectionEyebrow>阅读区</SectionEyebrow>
-                <h2 className="mt-1.5 text-lg font-semibold text-white">邮件详情</h2>
-              </div>
-              {loadingMessageId ? <Badge tone="accent">正在载入</Badge> : <Badge>隔离 HTML 预览</Badge>}
-            </div>
-
-            {activeMessage ? (
-              <div className="h-[calc(100%-4.5rem)] overflow-auto pr-1">
+              <div className="min-h-0 flex-1 overflow-y-auto pr-1">
                 <div className="space-y-4">
-                  <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-                    <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                      <div className="space-y-2">
-                        <h3 className="text-xl font-semibold tracking-tight text-white">{activeMessage.subject}</h3>
-                        <div className="grid gap-2 text-sm text-slate-300">
-                          <p><span className="text-slate-500">发件人：</span>{activeMessage.from}</p>
-                          {activeMessage.to ? <p><span className="text-slate-500">收件人：</span>{activeMessage.to}</p> : null}
-                          <p><span className="text-slate-500">时间：</span>{activeMessage.receivedAt ? new Date(activeMessage.receivedAt).toLocaleString("zh-CN") : "未知"}</p>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap gap-2 xl:justify-end">
-                        <Badge>{activeMessage.hasAttachments ? "含附件" : "无附件"}</Badge>
-                        <Badge tone="accent">{activeMessage.provider}</Badge>
+                  <button
+                    type="button"
+                    onClick={() => resetWorkspace(selectedProviderMeta)}
+                    className="w-full rounded-[20px] border border-transparent bg-[#1d1f47] px-3.5 py-3 text-left text-stone-100"
+                  >
+                    <div className="space-y-2.5">
+                      <p className="text-[14px] font-semibold leading-5 text-[#9bd0ff]">{selectedProviderMeta.name}</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        <span className={`inline-flex min-h-6 items-center rounded-full border px-2 text-[11px] font-medium ${getTierBadge(selectedProviderMeta)}`}>
+                          {selectedProviderMeta.tier}
+                        </span>
+                        <span className={`inline-flex min-h-6 items-center gap-1 rounded-full border px-2 text-[11px] font-medium ${getAvailabilityBadge(selectedProviderMeta)}`}>
+                          <DotIcon className="h-2 w-2" />
+                          {selectedProviderMeta.enabled ? "可用" : "关闭"}
+                        </span>
                       </div>
                     </div>
-                  </div>
+                  </button>
 
-                  {activeMessage.attachments.length > 0 ? (
-                    <div className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-                      <div className="mb-4 flex items-center justify-between gap-3">
-                        <p className="text-sm font-semibold text-white">附件</p>
-                        <p className="text-xs text-slate-500">仅在 provider 支持时可下载</p>
-                      </div>
-                      <div className="flex flex-wrap gap-2.5">
-                        {activeMessage.attachments.map((attachment) => (
-                          <a
-                            key={attachment.id}
-                            href={
-                              attachment.downloadMode === "unsupported"
-                                ? undefined
-                                : `/api/mailboxes/${activeMessage.mailboxId}/messages/${activeMessage.id}/attachments/${attachment.id}`
-                            }
-                            aria-disabled={attachment.downloadMode === "unsupported"}
-                            className={`rounded-full border px-3 py-1.5 text-xs transition ${
-                              attachment.downloadMode === "unsupported"
-                                ? "cursor-not-allowed border-white/10 bg-white/5 text-slate-500"
-                                : "border-emerald-400/30 bg-emerald-400/10 text-emerald-100 hover:bg-emerald-400/18"
-                            }`}
-                          >
-                            {attachment.downloadMode === "unsupported"
-                              ? `${attachment.filename}（暂不支持）`
-                              : `下载 ${attachment.filename}`}
-                          </a>
-                        ))}
-                      </div>
+                  {otherProviders.length > 0 ? (
+                    <div className="space-y-2">
+                      {otherProviders.map((provider) => (
+                        <button
+                          key={provider.id}
+                          type="button"
+                          onClick={() => resetWorkspace(provider)}
+                          className={`flex min-h-9 w-full items-center justify-between gap-3 rounded-full border px-3 text-left transition ${
+                            provider.enabled
+                              ? "border-white/8 bg-white/[0.02] text-stone-200 hover:bg-white/[0.04]"
+                              : "border-white/6 bg-transparent text-stone-500 opacity-70"
+                          }`}
+                        >
+                          <p className="truncate text-[12px] font-medium">{provider.name}</p>
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            <span className={`inline-flex h-2.5 w-2.5 rounded-full ${provider.enabled ? "bg-emerald-300" : "bg-stone-500"}`} aria-hidden="true" />
+                            <span className={`text-[11px] font-medium ${getTierAccent(provider)}`}>{provider.enabled ? provider.tier : `${provider.tier} / 关闭`}</span>
+                          </div>
+                        </button>
+                      ))}
                     </div>
                   ) : null}
+                </div>
+              </div>
+            </section>
 
-                  <div className="grid gap-4 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-                    <article className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-                      <div className="mb-4 flex items-center justify-between gap-3">
-                        <p className="text-sm font-semibold text-white">纯文本</p>
-                        <Badge>稳定阅读</Badge>
-                      </div>
-                      <div className="max-h-[calc(100dvh-320px)] overflow-auto whitespace-pre-wrap text-sm leading-7 text-slate-300">
-                        {activeMessage.text ?? "无纯文本正文。"}
-                      </div>
-                    </article>
+            <section className="mt-5 shrink-0 border-t border-white/10 pt-5">
+              <div className="space-y-4">
+                <div className="space-y-3">
+                  <div className="text-xs uppercase tracking-[0.18em] text-stone-500">地址参数</div>
+                  <label className="block space-y-2">
+                    <span className="text-xs text-stone-500">邮箱前缀</span>
+                    <div className="relative">
+                      <input
+                        value={aliasInput}
+                        onChange={(event) => setAliasInput(event.target.value.replace(/[^a-zA-Z0-9._-]/g, ""))}
+                        placeholder="例如 inbox-demo"
+                        className="min-h-12 w-full rounded-2xl border border-white/8 bg-white/[0.03] px-4 pr-12 text-[15px] text-stone-100 outline-none placeholder:text-stone-500 focus:border-[#4e6bd8]"
+                      />
+                      <button
+                        type="button"
+                        onClick={applyRandomAlias}
+                        aria-label="随机生成前缀"
+                        className="absolute right-2 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-xl text-stone-300 transition hover:bg-white/[0.05]"
+                      >
+                        <ShuffleIcon className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </label>
 
-                    <article className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-                      <div className="mb-4 flex items-center justify-between gap-3">
-                        <p className="text-sm font-semibold text-white">HTML 预览</p>
-                        <Badge tone="accent">沙箱隔离</Badge>
-                      </div>
-                      <div className="max-h-[calc(100dvh-320px)] overflow-auto rounded-[20px] border border-slate-200/70 bg-white p-3 shadow-inner shadow-slate-200/60">
-                        {activeMessage.html ? (
-                          <iframe
-                            title="邮件 HTML 预览"
-                            srcDoc={activeMessage.html}
-                            sandbox=""
-                            referrerPolicy="no-referrer"
-                            className="min-h-[360px] w-full rounded-xl border-0 bg-white"
-                          />
-                        ) : (
-                          <div className="flex min-h-[220px] items-center justify-center rounded-xl bg-slate-50 px-6 text-center text-sm leading-7 text-slate-500">
-                            这封邮件没有提供 HTML 正文，当前只展示纯文本内容。
-                          </div>
-                        )}
-                      </div>
-                    </article>
+                  <div className="space-y-2">
+                    <span className="text-xs text-stone-500">邮箱后缀</span>
+                    <div className="min-h-12 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-[15px] text-stone-100">
+                      {selectedDomain || (loadingDomains ? "载入中..." : "自动分配 / 固定域名")}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {domainOptions.length === 0 ? (
+                        <span className="w-full rounded-full border border-dashed border-white/8 px-3 py-2 text-sm text-stone-500">
+                          {loadingDomains ? "后缀载入中..." : "当前 provider 没有可选后缀。"}
+                        </span>
+                      ) : (
+                        domainOptions.map((option) => {
+                          const active = option.domain === selectedDomain;
+
+                          return (
+                            <button
+                              key={`${option.provider}:${option.domain}`}
+                              type="button"
+                              onClick={() => setSelectedDomain(option.domain)}
+                              className={`min-h-8 w-[calc(50%-4px)] rounded-full border px-2.5 text-left text-[12px] transition ${
+                                active
+                                  ? "border-transparent bg-[#1d1f47] text-[#9bd0ff]"
+                                  : "border-white/8 bg-white/[0.02] text-stone-300 hover:bg-white/[0.04]"
+                              }`}
+                            >
+                              {option.label}
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => createMailboxSession(selectedProvider)}
+                      disabled={busy || !selectedProviderMeta.enabled}
+                      className="min-h-12 flex-1 rounded-2xl bg-[#1d1f47] px-4 text-sm font-semibold text-[#7cc0ff] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      {busy ? "创建中..." : mailbox ? "重建地址" : "创建临时邮箱"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={createRandomMailbox}
+                      disabled={busy || !selectedProviderMeta.enabled}
+                      aria-label="随机生成邮箱"
+                      className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/8 bg-white/[0.03] text-stone-300 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-45"
+                    >
+                      <ShuffleIcon />
+                    </button>
                   </div>
                 </div>
-              </div>
-            ) : (
-              <div className="flex h-[calc(100%-4.5rem)] items-center justify-center rounded-xl border border-dashed border-white/12 bg-[radial-gradient(circle_at_top,rgba(34,197,94,0.08),transparent_30%),rgba(255,255,255,0.02)] px-8 text-center">
-                <div className="max-w-xl space-y-4">
-                  <SectionEyebrow>准备阅读</SectionEyebrow>
-                  <h3 className="text-2xl font-semibold tracking-tight text-white">{detailEmptyMessage}</h3>
-                  <p className="text-sm leading-7 text-slate-400">
-                    {mailbox
-                      ? "消息详情会在这里展开，包括元信息、纯文本正文和隔离后的 HTML 预览。"
-                      : "创建会话之后，系统会自动开始轮询，消息列表和阅读区会按顺序进入工作状态。"}
-                  </p>
+
+                <div className="space-y-2 border-t border-white/8 pt-4">
+                  <p className="text-sm font-medium text-stone-200">当前聚合源：{selectedProviderMeta.name}</p>
+                  <p className="text-sm leading-7 text-stone-400">{selectedProviderMeta.limitations[0] ?? selectedProviderMeta.description}</p>
+                  <a
+                    href={selectedProviderMeta.docsUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 text-sm text-stone-300 transition hover:text-white"
+                  >
+                    查看文档
+                    <ExternalIcon />
+                  </a>
                 </div>
               </div>
+            </section>
+          </div>
+        </aside>
+
+        <section className="flex min-h-dvh flex-1 flex-col">
+          <header className="border-b border-white/10 px-5 py-4 sm:px-8">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <div className="flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-4 text-stone-100 xl:max-w-[420px]">
+                  <span className="text-stone-400">
+                    <InboxIcon className="h-4.5 w-4.5" />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[15px]">
+                    {mailbox?.address.address ?? `${selectedProviderMeta.name} · 尚未创建邮箱`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={copyAddress}
+                    disabled={!mailbox}
+                    aria-label="复制邮箱地址"
+                    className="text-stone-400 transition hover:text-white disabled:cursor-not-allowed disabled:text-stone-600"
+                  >
+                    <CopyIcon />
+                  </button>
+                </div>
+
+                <div className="hidden xl:flex xl:items-center xl:gap-2">
+                  <Pill>{formatAccessMode(mailbox?.accessMode ?? selectedProviderMeta.accessMode)}</Pill>
+                  <Pill>{mailbox ? formatRelativeExpiry(mailbox.expiresAt) : "等待创建"}</Pill>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => refreshMessages()}
+                  disabled={!mailbox || loadingMessages}
+                  aria-label="刷新收件箱"
+                  className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-2xl border border-white/8 bg-white/[0.03] text-stone-200 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:text-stone-600"
+                >
+                  <RefreshIcon className="h-4.5 w-4.5" />
+                </button>
+                <Pill>{loadingMessages ? "同步中" : "15 秒自动检查"}</Pill>
+              </div>
+            </div>
+            <p className="mt-3 text-sm leading-7 text-stone-400">{notice}</p>
+          </header>
+
+          <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            {mailbox && messages.length > 0 ? (
+              <div className="grid min-h-0 flex-1 lg:grid-cols-[360px_minmax(0,1fr)]">
+                <section className="min-h-0 border-b border-white/10 px-5 py-6 lg:border-b-0 lg:border-r lg:px-6">
+                  <div className="mb-6 flex items-start justify-between gap-4">
+                    <div>
+                      <h1 className="text-[44px] font-semibold tracking-tight text-stone-100">收件箱</h1>
+                      <p className="mt-3 text-sm leading-7 text-stone-400">来自 {selectedProviderMeta.name} 的邮件会持续出现在这里。</p>
+                    </div>
+                    <span className="text-sm text-stone-500">{messages.length} 封</span>
+                  </div>
+
+                  <div className="min-h-0 space-y-3 overflow-y-auto pr-1 lg:h-[calc(100dvh-220px)]">
+                    {messages.map((message) => {
+                      const active = activeMessage?.id === message.id;
+                      const isLoading = loadingMessageId === message.id;
+
+                      return (
+                        <button
+                          key={message.id}
+                          type="button"
+                          onClick={() => openMessage(message.id)}
+                          className={`w-full rounded-2xl border px-4 py-4 text-left transition ${
+                            active
+                              ? "border-transparent bg-[#1d1f47]"
+                              : "border-transparent bg-transparent hover:bg-white/[0.03]"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className={`truncate text-[15px] font-medium ${active ? "text-[#8cc8ff]" : "text-stone-100"}`}>
+                                {message.subject}
+                              </p>
+                              <p className="mt-2 truncate text-sm text-stone-400">{isLoading ? "正在载入邮件..." : message.from}</p>
+                            </div>
+                            <span className="shrink-0 text-xs text-stone-500">
+                              {message.receivedAt
+                                ? new Date(message.receivedAt).toLocaleTimeString("zh-CN", {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })
+                                : "--:--"}
+                            </span>
+                          </div>
+                          {message.snippet ? <p className="mt-3 line-clamp-2 text-sm leading-7 text-stone-400">{message.snippet}</p> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="min-h-0 px-5 py-6 lg:px-8">
+                  {activeMessage ? (
+                    <div className="h-full w-full overflow-y-auto pr-1">
+                      <div className="w-full space-y-8">
+                        <div>
+                          <h2 className="text-3xl font-semibold tracking-tight text-stone-100">{activeMessage.subject}</h2>
+                          <div className="mt-5 grid gap-2 text-sm leading-7 text-stone-400">
+                            <p><span className="text-stone-500">发件人：</span>{activeMessage.from}</p>
+                            {activeMessage.to ? <p><span className="text-stone-500">收件人：</span>{activeMessage.to}</p> : null}
+                            <p><span className="text-stone-500">时间：</span>{activeMessage.receivedAt ? new Date(activeMessage.receivedAt).toLocaleString("zh-CN") : "未知"}</p>
+                          </div>
+                        </div>
+
+                        {activeMessage.attachments.length > 0 ? (
+                          <div className="space-y-3 border-t border-white/10 pt-6">
+                            <p className="text-sm font-medium text-stone-200">附件</p>
+                            <div className="flex flex-wrap gap-2.5">
+                              {activeMessage.attachments.map((attachment) =>
+                                attachment.downloadMode === "unsupported" ? (
+                                  <span
+                                    key={attachment.id}
+                                    className="inline-flex min-h-10 items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-4 text-xs text-stone-500"
+                                  >
+                                    <PaperclipIcon />
+                                    {attachment.filename}（暂不支持）
+                                  </span>
+                                ) : (
+                                  <a
+                                    key={attachment.id}
+                                    href={`/api/mailboxes/${activeMessage.mailboxId}/messages/${activeMessage.id}/attachments/${attachment.id}`}
+                                    className="inline-flex min-h-10 items-center gap-2 rounded-full border border-[#31356a] bg-[#1d1f47] px-4 text-xs text-[#8cc8ff] transition hover:brightness-110"
+                                  >
+                                    <PaperclipIcon />
+                                    下载 {attachment.filename}
+                                  </a>
+                                )
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        <div className="grid gap-6 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
+                          <article className="rounded-3xl border border-white/8 bg-white/[0.03] p-5">
+                            <div className="mb-4 flex items-center justify-between gap-3">
+                              <p className="text-sm font-medium text-stone-200">纯文本</p>
+                              <span className="text-xs text-stone-500">稳定阅读</span>
+                            </div>
+                            <div className="max-h-[480px] overflow-y-auto whitespace-pre-wrap text-sm leading-8 text-stone-300">
+                              {activeMessage.text ?? "无纯文本正文。"}
+                            </div>
+                          </article>
+
+                          <article className="rounded-3xl border border-white/8 bg-white/[0.03] p-5">
+                            <div className="mb-4 flex items-center justify-between gap-3">
+                              <p className="text-sm font-medium text-stone-200">HTML 预览</p>
+                              <span className="text-xs text-stone-500">沙箱隔离</span>
+                            </div>
+                            <div className="max-h-[480px] overflow-auto rounded-[22px] border border-stone-300/60 bg-white p-3">
+                              {activeMessage.html ? (
+                                <iframe
+                                  title="邮件 HTML 预览"
+                                  srcDoc={activeMessage.html}
+                                  sandbox=""
+                                  referrerPolicy="no-referrer"
+                                  className="min-h-[360px] w-full rounded-2xl border-0 bg-white"
+                                />
+                              ) : (
+                                <div className="flex min-h-[260px] items-center justify-center rounded-2xl bg-stone-50 px-6 text-center text-sm leading-7 text-stone-500">
+                                  这封邮件没有提供 HTML 正文，当前只展示纯文本内容。
+                                </div>
+                              )}
+                            </div>
+                          </article>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <EmptyState
+                      title="选择一封邮件"
+                      description="左侧收件箱已经收到邮件，点击其中任意一封后，正文、附件和 HTML 预览会显示在这里。"
+                    />
+                  )}
+                </section>
+              </div>
+            ) : (
+              <div className="flex h-full min-h-0 flex-col px-5 py-6 sm:px-8">
+                <div>
+                  <h1 className="text-[44px] font-semibold tracking-tight text-stone-100">收件箱</h1>
+                </div>
+                {!mailbox ? (
+                  <EmptyState
+                    title="先创建一个临时邮箱"
+                    description="左侧选择聚合源并填写地址参数后，就能开始收信。整个界面保留 DuckMail 式的简洁结构，但把我们的多源聚合能力整合进了侧栏。"
+                    action={
+                      <button
+                        type="button"
+                        onClick={() => createMailboxSession(selectedProvider)}
+                        disabled={busy || !selectedProviderMeta.enabled}
+                        className="min-h-12 rounded-2xl bg-[#1d1f47] px-6 text-sm font-semibold text-[#8cc8ff] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-45"
+                      >
+                        {busy ? "创建中..." : `创建 ${selectedProviderMeta.name} 邮箱`}
+                      </button>
+                    }
+                  />
+                ) : (
+                  <EmptyState
+                    title="收件箱为空"
+                    description="您还没有收到任何邮件。当收到邮件后，它们会先出现在当前画布左侧的列表中，保持页面打开即可继续自动轮询。"
+                    action={
+                      <button
+                        type="button"
+                        onClick={() => refreshMessages()}
+                        disabled={loadingMessages}
+                        className="min-h-12 rounded-2xl border border-white/8 bg-white/[0.03] px-6 text-sm font-semibold text-stone-200 transition hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:text-stone-600"
+                      >
+                        {loadingMessages ? "刷新中..." : "立即刷新"}
+                      </button>
+                    }
+                  />
+                )}
+              </div>
             )}
-          </section>
-        </main>
+          </main>
+        </section>
       </div>
     </div>
   );
