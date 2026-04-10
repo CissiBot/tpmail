@@ -15,15 +15,14 @@ import { ProviderAdapter } from "@/server/tpmail/providers/base";
 
 interface MaildropListResponse {
   data?: {
-    inbox?: {
-      messages?: Array<{
-        id: string;
-        headerfrom?: string;
-        subject?: string;
-        receivedAt?: string;
-        text?: string;
-      }>;
-    };
+    inbox?: Array<{
+      id: string;
+      headerfrom?: string;
+      mailfrom?: string;
+      rcptto?: string;
+      subject?: string;
+      date?: string;
+    }>;
   };
   errors?: Array<{
     message?: string;
@@ -35,10 +34,12 @@ interface MaildropDetailResponse {
     message?: {
       id: string;
       headerfrom?: string;
+      mailfrom?: string;
+      rcptto?: string;
       subject?: string;
-      receivedAt?: string;
+      date?: string;
       html?: string;
-      text?: string;
+      data?: string;
     };
   };
   errors?: Array<{
@@ -93,6 +94,16 @@ async function graphql<T>(query: string, variables: Record<string, unknown>) {
   });
 }
 
+function ensureNoGraphqlErrors(errors: Array<{ message?: string }> | undefined, action: string) {
+  if (!errors?.length) {
+    return;
+  }
+
+  throw providerError("PROVIDER_REQUEST_FAILED", `Maildrop ${action}失败。`, 502, descriptor.id, true, {
+    errors,
+  });
+}
+
 export const maildropAdapter: ProviderAdapter = {
   descriptor,
   async listDomains() {
@@ -107,7 +118,17 @@ export const maildropAdapter: ProviderAdapter = {
   },
   async createMailbox(input: CreateMailboxInput) {
     const localPart = input.alias?.trim() || randomLocalPart();
-    const domain = input.domain?.trim() || descriptor.defaultDomain;
+    const requestedDomain = input.domain?.trim();
+    if (requestedDomain && requestedDomain !== descriptor.defaultDomain) {
+      throw providerError(
+        "INVALID_REQUEST",
+        `Maildrop 仅支持 ${descriptor.defaultDomain} 域名。`,
+        400,
+        descriptor.id
+      );
+    }
+
+    const domain = requestedDomain || descriptor.defaultDomain;
 
     if (!domain) {
       throw providerError("INVALID_REQUEST", "Maildrop 缺少可用域名。", 400, descriptor.id);
@@ -121,66 +142,50 @@ export const maildropAdapter: ProviderAdapter = {
     const result = await graphql<MaildropListResponse>(
       `query Inbox($mailbox: String!) {
         inbox(mailbox: $mailbox) {
-          messages {
-            id
-            headerfrom
-            subject
-            receivedAt
-            text
-          }
+          id
+          headerfrom
+          mailfrom
+          rcptto
+          subject
+          date
         }
       }`,
       { mailbox: localPart }
     );
 
-    if (result.errors?.length) {
-      throw providerError(
-        "PROVIDER_REQUEST_FAILED",
-        result.errors[0]?.message ?? "Maildrop 返回了 GraphQL 错误。",
-        502,
-        descriptor.id,
-        false,
-        { errors: result.errors }
-      );
-    }
+    ensureNoGraphqlErrors(result.errors, "收件箱查询");
 
-    return (result.data?.inbox?.messages ?? []).map<MessageSummary>((item) => ({
+    return (result.data?.inbox ?? []).map<MessageSummary>((item) => ({
       id: item.id,
       provider: descriptor.id,
       mailboxId: context.mailbox.id,
-      from: item.headerfrom ?? "未知发件人",
+      from: item.headerfrom ?? item.mailfrom ?? "未知发件人",
+      to: item.rcptto ?? context.mailbox.address.address,
       subject: item.subject ?? "无主题",
-      receivedAt: item.receivedAt ?? null,
+      receivedAt: item.date ?? null,
       hasAttachments: false,
-      snippet: htmlToSnippet(item.text),
+      snippet: undefined,
     }));
   },
   async getMessage(context: ProviderContext, messageId: string) {
     const localPart = context.mailbox.address.localPart;
     const result = await graphql<MaildropDetailResponse>(
-      `query Message($mailbox: String!, $id: ID!) {
+      `query Message($mailbox: String!, $id: String!) {
         message(mailbox: $mailbox, id: $id) {
           id
           headerfrom
+          mailfrom
+          rcptto
           subject
-          receivedAt
+          date
+          data
           html
-          text
         }
       }`,
       { mailbox: localPart, id: messageId }
     );
 
-    if (result.errors?.length) {
-      throw providerError(
-        "PROVIDER_REQUEST_FAILED",
-        result.errors[0]?.message ?? "Maildrop 返回了 GraphQL 错误。",
-        502,
-        descriptor.id,
-        false,
-        { errors: result.errors }
-      );
-    }
+    ensureNoGraphqlErrors(result.errors, "邮件详情查询");
 
     const message = result.data?.message;
     if (!message) {
@@ -191,12 +196,13 @@ export const maildropAdapter: ProviderAdapter = {
       id: message.id,
       provider: descriptor.id,
       mailboxId: context.mailbox.id,
-      from: message.headerfrom ?? "未知发件人",
+      from: message.headerfrom ?? message.mailfrom ?? "未知发件人",
+      to: message.rcptto ?? context.mailbox.address.address,
       subject: message.subject ?? "无主题",
-      receivedAt: message.receivedAt ?? null,
+      receivedAt: message.date ?? null,
       hasAttachments: false,
       html: message.html ?? null,
-      text: message.text ?? null,
+      text: message.data ?? (htmlToSnippet(message.html) || null),
       attachments: [],
     };
   },

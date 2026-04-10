@@ -86,7 +86,10 @@ export async function listProviderDomainsWithCacheInfo(providerId: ProviderId) {
         ]
       : [];
 
-  writeCache(cacheKey, domains, PROVIDER_DOMAINS_CACHE_TTL_MS);
+  if (domains.length > 0) {
+    writeCache(cacheKey, domains, PROVIDER_DOMAINS_CACHE_TTL_MS);
+  }
+
   return {
     domains,
     cacheStatus: "miss" as const,
@@ -107,29 +110,33 @@ export async function createMailbox(input: CreateMailboxInput) {
 
   const requestedDomain = input.domain?.trim();
   if (requestedDomain) {
-    const allowedDomains = await listProviderDomains(input.provider);
+    if (adapter.descriptor.capabilities.customDomain && !adapter.listDomains) {
+      // 由 provider 自身决定自定义域名是否合法。
+    } else {
+      const allowedDomains = await listProviderDomains(input.provider);
 
-    if (allowedDomains.length === 0) {
-      throw providerError(
-        "UNSUPPORTED_OPERATION",
-        "当前 provider 暂不支持自定义后缀选择。",
-        400,
-        input.provider
-      );
-    }
+      if (allowedDomains.length === 0) {
+        throw providerError(
+          "UNSUPPORTED_OPERATION",
+          "当前 provider 暂不支持自定义后缀选择。",
+          400,
+          input.provider
+        );
+      }
 
-    const isAllowed = allowedDomains.some((item) => item.domain === requestedDomain);
-    if (!isAllowed) {
-      throw providerError(
-        "INVALID_REQUEST",
-        "所选邮箱后缀不在当前 provider 的可用范围内。",
-        400,
-        input.provider,
-        false,
-        {
-          requestedDomain,
-        }
-      );
+      const isAllowed = allowedDomains.some((item) => item.domain === requestedDomain);
+      if (!isAllowed) {
+        throw providerError(
+          "INVALID_REQUEST",
+          "所选邮箱后缀不在当前 provider 的可用范围内。",
+          400,
+          input.provider,
+          false,
+          {
+            requestedDomain,
+          }
+        );
+      }
     }
   }
 

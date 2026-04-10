@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { providerError } from "@/lib/tpmail/errors";
+import { AppError, providerError } from "@/lib/tpmail/errors";
 import {
   CreateMailboxInput,
   MailboxSession,
@@ -30,8 +30,13 @@ interface TempmailListResponse {
     body?: string;
     html?: string;
     date?: string;
-  }>;
+  }>; 
 }
+
+type TempmailRestrictionPayload = {
+  error?: string;
+  captcha_required?: boolean;
+};
 
 const descriptor: ProviderDescriptor = {
   id: "tempmail_lol",
@@ -70,6 +75,60 @@ function mapMessage(mailboxId: string, message: NonNullable<TempmailListResponse
   };
 }
 
+function toRestrictionPayload(error: AppError): TempmailRestrictionPayload | null {
+  const details = error.details?.details;
+  if (!details || typeof details !== "object") {
+    return null;
+  }
+
+  const payload = details as TempmailRestrictionPayload;
+  return typeof payload.error === "string" ? payload : null;
+}
+
+function isGeoRestriction(payload: TempmailRestrictionPayload | null) {
+  if (!payload?.error) {
+    return false;
+  }
+
+  const message = payload.error.toLowerCase();
+  return (
+    (message.includes("country") && message.includes("not allowed")) ||
+    message.includes("region") ||
+    message.includes("geo") ||
+    message.includes("blocked") ||
+    message.includes("restricted") ||
+    message.includes("free tier")
+  );
+}
+
+async function requestTempmailJson<T>(input: string, init?: RequestInit) {
+  try {
+    return await requestJson<T>(input, init, {
+      provider: descriptor.id,
+      expectedStatus: [200, 201],
+    });
+  } catch (error) {
+    if (error instanceof AppError && error.status === 403) {
+      const payload = toRestrictionPayload(error);
+      if (isGeoRestriction(payload)) {
+        throw providerError(
+          "PROVIDER_ACCESS_RESTRICTED",
+          "TempMail.lol 免费接口当前限制该网络区域访问，请切换其他 provider，或使用其 Plus / Ultra 服务。",
+          403,
+          descriptor.id,
+          false,
+          {
+            upstreamMessage: payload?.error,
+            captchaRequired: payload?.captcha_required,
+          }
+        );
+      }
+    }
+
+    throw error;
+  }
+}
+
 export const tempmailLolAdapter: ProviderAdapter = {
   descriptor,
   async createMailbox(input: CreateMailboxInput) {
@@ -83,15 +142,12 @@ export const tempmailLolAdapter: ProviderAdapter = {
       payload.domain = input.domain.trim();
     }
 
-    const result = await requestJson<TempmailCreateResponse>("https://api.tempmail.lol/v2/inbox/create", {
+    const result = await requestTempmailJson<TempmailCreateResponse>("https://api.tempmail.lol/v2/inbox/create", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
-    }, {
-      provider: descriptor.id,
-      expectedStatus: [200, 201],
     });
 
     const address = result.address ?? result.email;
@@ -128,9 +184,7 @@ export const tempmailLolAdapter: ProviderAdapter = {
     const url = new URL("https://api.tempmail.lol/v2/inbox");
     url.searchParams.set("token", token);
 
-    const result = await requestJson<TempmailListResponse>(url.toString(), undefined, {
-      provider: descriptor.id,
-    });
+    const result = await requestTempmailJson<TempmailListResponse>(url.toString());
 
     return (result.emails ?? []).map((item) => mapMessage(context.mailbox.id, item));
   },
@@ -145,9 +199,7 @@ export const tempmailLolAdapter: ProviderAdapter = {
     const token = context.mailbox.metadata?.token;
     const url = new URL("https://api.tempmail.lol/v2/inbox");
     url.searchParams.set("token", token ?? "");
-    const result = await requestJson<TempmailListResponse>(url.toString(), undefined, {
-      provider: descriptor.id,
-    });
+    const result = await requestTempmailJson<TempmailListResponse>(url.toString());
     const full = (result.emails ?? []).find((item) => mapMessage(context.mailbox.id, item).id === messageId);
 
     if (!full) {

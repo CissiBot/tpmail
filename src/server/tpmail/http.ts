@@ -27,10 +27,8 @@ export async function requestJson<T>(
 ): Promise<T> {
   const { init: timedInit, clear } = withTimeout(init, options?.timeoutMs);
 
-  let response: Response;
-
   try {
-    response = await fetch(input, {
+    const response = await fetch(input, {
       ...timedInit,
       headers: {
         Accept: "application/json",
@@ -38,11 +36,35 @@ export async function requestJson<T>(
       },
       cache: "no-store",
     });
-  } catch (error) {
-    clear();
 
+    const expectedStatus = options?.expectedStatus ?? [200];
+    if (!expectedStatus.includes(response.status)) {
+      let details: unknown;
+
+      try {
+        details = await response.json();
+      } catch {
+        details = await response.text();
+      }
+
+      throw providerError(
+        response.status === 429 ? "PROVIDER_RATE_LIMITED" : "PROVIDER_REQUEST_FAILED",
+        `上游 provider 请求失败（${response.status}）。`,
+        response.status,
+        options?.provider,
+        response.status >= 500 || response.status === 429,
+        { details }
+      );
+    }
+
+    return (await response.json()) as T;
+  } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw providerError("PROVIDER_TIMEOUT", "上游 provider 响应超时。", 504, options?.provider, true);
+    }
+
+    if (error instanceof Error && error.name === "AppError") {
+      throw error;
     }
 
     throw providerError(
@@ -53,31 +75,9 @@ export async function requestJson<T>(
       true,
       error instanceof Error ? { cause: error.message } : undefined
     );
+  } finally {
+    clear();
   }
-
-  const expectedStatus = options?.expectedStatus ?? [200];
-  if (!expectedStatus.includes(response.status)) {
-    let details: unknown;
-
-    try {
-      details = await response.json();
-    } catch {
-      details = await response.text();
-    }
-
-    throw providerError(
-      response.status === 429 ? "PROVIDER_RATE_LIMITED" : "PROVIDER_REQUEST_FAILED",
-      `上游 provider 请求失败（${response.status}）。`,
-      response.status,
-      options?.provider,
-      response.status >= 500 || response.status === 429,
-      { details }
-    );
-  }
-
-  const result = (await response.json()) as T;
-  clear();
-  return result;
 }
 
 export async function requestText(

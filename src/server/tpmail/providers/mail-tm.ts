@@ -36,6 +36,13 @@ const descriptor: ProviderDescriptor = {
   limitations: ["无需 API key，但每个邮箱都要先创建账号再换 token", "官方限制约 8 QPS / IP"],
 };
 
+type MailTmDomain = {
+  id: string;
+  domain: string;
+  isActive?: boolean;
+  isPrivate?: boolean;
+};
+
 type MailTmDomainListResponse = {
   "hydra:member"?: Array<{
     id: string;
@@ -43,7 +50,7 @@ type MailTmDomainListResponse = {
     isActive?: boolean;
     isPrivate?: boolean;
   }>;
-};
+} | MailTmDomain[];
 
 type MailTmAccountResponse = {
   id: string;
@@ -128,6 +135,14 @@ function toAttachments(items?: MailTmMessageResponse["attachments"]): Attachment
   }));
 }
 
+function toDomainItems(result: MailTmDomainListResponse) {
+  if (Array.isArray(result)) {
+    return result;
+  }
+
+  return result["hydra:member"] ?? [];
+}
+
 export const mailTmAdapter: ProviderAdapter = {
   descriptor,
   async listDomains() {
@@ -135,7 +150,7 @@ export const mailTmAdapter: ProviderAdapter = {
       provider: descriptor.id,
     });
 
-    const domains = (result["hydra:member"] ?? []).filter((item) => item.domain && item.isActive !== false && item.isPrivate !== true);
+    const domains = toDomainItems(result).filter((item) => item.domain && item.isActive !== false && item.isPrivate !== true);
 
     return domains.map<ProviderDomainOption>((item, index) => ({
       provider: descriptor.id,
