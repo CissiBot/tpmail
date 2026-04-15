@@ -1,0 +1,137 @@
+# TPMail
+
+An aggregated frontend and proxy layer for temporary email workflows. TPMail is built with Next 16, React 19, TypeScript, and Tailwind 4, bringing mailbox creation, message reading, attachment entry points, and mail preview from multiple providers into one interface and API surface.
+
+The repository is currently a **single-package npm project**. The root `package.json` provides the four scripts `dev`, `build`, `start`, and `lint`, and all runtime and verification steps should be based on the root directory.
+
+> [!NOTE]
+> Whether a provider is enabled is determined by each adapter's `descriptor.enabled` in `src/server/tpmail/providers/*.ts`. The README only documents the current implementation approach, it is not the final source of truth.
+
+<!-- README-I18N:START -->
+
+[中文](./README.md) | **English**
+
+<!-- README-I18N:END -->
+
+## Project Overview
+
+This project provides a unified entry point for integrating multiple temporary email providers, and supports the following flow in the browser:
+
+- View the list of available providers
+- Create a temporary mailbox session
+- Fetch inbox message lists
+- View the plain text and HTML content of a single email
+- Enter attachment downloads through API routes
+
+The first screen on the homepage does not request `/api/providers` first. Instead, `src/app/page.tsx` calls `listProviders()` directly and injects the result into `src/components/tpmail/app-shell.tsx`.
+
+## Quick Start
+
+```bash
+cp .env.example .env
+npm install
+npm run dev
+```
+
+After startup, you can access the app locally. `.env.example` contains placeholder credential entries for several providers, but actual enablement is still determined by `descriptor.enabled` in each provider adapter.
+
+## Highlights
+
+- **Unified provider entry**: The server aggregates 7 provider IDs, and the frontend renders them through a shared contract.
+- **Server-side first screen injection**: The homepage calls `listProviders()` directly, avoiding an extra `/api/providers` request on the first screen.
+- **Single-page workspace**: `src/components/tpmail/app-shell.tsx` handles provider switching, mailbox creation, domain prefetching, message reading, attachment entry points, and email preview.
+- **Create after domain prefetch**: After switching providers, the frontend first requests `/api/providers/[providerId]/domains` to get available suffixes.
+- **Automatic inbox refresh**: After a mailbox is created, the frontend polls the message list every 15 seconds, not through real-time push.
+- **Dual-view reading**: The same email provides both a plain text reading area and an HTML iframe preview area.
+- **HTML sandbox isolation**: The HTML body is displayed through the `sandbox` mode of an `iframe`, reducing isolation risks introduced by previewing.
+- **Attachments go through an API entry**: Attachment links land on the app's own route handler, then the backend redirects to the upstream URL.
+
+## Architecture
+
+The main frontend workspace is concentrated in `src/components/tpmail/app-shell.tsx`. It prefers `duckmail` by default, as long as that provider is enabled. In this component, users complete provider selection, mailbox creation, message polling, opening individual emails, and accessing attachment download entry points.
+
+The main backend flow is as follows:
+
+```text
+src/app/api/**/route.ts
+-> src/server/tpmail/service.ts
+-> src/server/tpmail/providers/*.ts
+```
+
+Specifically:
+
+- `src/app/api/**/route.ts` handles Route Handlers under the App Router
+- `src/server/tpmail/service.ts` handles provider aggregation, parameter validation, cache access, and session access
+- `src/server/tpmail/providers/*.ts` contains each provider's adapter implementation
+- `src/lib/tpmail/types.ts` and `src/lib/tpmail/errors.ts` define the shared types and error response contract
+
+## State and Runtime Boundaries
+
+> [!WARNING]
+> Mailbox sessions and caches are stored in in-process memory through `globalThis + Map` in `src/server/tpmail/store.ts`. State is lost after a service restart, and this is not suitable for shared state across multiple instances.
+
+- Sessions and caches both stay in the current Node process memory and are not persisted.
+- `/api/providers` and `/api/providers/[providerId]/domains` return the `x-tpmail-cache` response header to indicate cache hits or misses.
+- When creating a mailbox, the backend validates the alias and only allows letters, numbers, dots, underscores, and hyphens.
+- If a request includes a domain, the service layer applies a whitelist check against the provider's available domains.
+- Attachment downloads are not static file serving. They use the attachment route handler to call `NextResponse.redirect()` and jump to the upstream address.
+- HTML email preview uses a sandboxed iframe, and this content should not be treated as directly trusted rendering.
+
+## Development
+
+This is a standard Next 16 App Router project, with Tailwind 4 used for styling. Tailwind is wired through `postcss.config.mjs` and `src/app/globals.css`, and having no `tailwind.config.*` in the repository is expected.
+
+Use only the following commands for development verification:
+
+```bash
+npm run lint
+npm run build
+```
+
+`next.config.ts` enables `output: "standalone"`, so the build output runs as a Node service, not as a static export site.
+
+## Deployment
+
+The repository includes containerized deployment files:
+
+- `Dockerfile` uses a three-stage build, and the final runtime image is assembled from `.next/standalone`, `.next/static`, and `public`
+- `compose.yaml` provides a local container startup method and injects environment variables from `.env`
+
+The final runtime semantics are a **standalone Node service**. In production, the image starts with `node server.js` inside the container and exposes port `3000` by default.
+
+## API Overview
+
+The current repository includes 7 route handlers, corresponding to the following endpoints:
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/api/providers` | Returns the provider descriptor list, with the `x-tpmail-cache` header |
+| `GET` | `/api/providers/:providerId/domains` | Returns the available domain list for the specified provider, with the `x-tpmail-cache` header |
+| `POST` | `/api/mailboxes` | Creates a mailbox session |
+| `GET` | `/api/mailboxes/:mailboxId` | Reads the public mailbox session information |
+| `GET` | `/api/mailboxes/:mailboxId/messages` | Fetches the mailbox message list |
+| `GET` | `/api/mailboxes/:mailboxId/messages/:messageId` | Fetches a single email detail |
+| `GET` | `/api/mailboxes/:mailboxId/messages/:messageId/attachments/:attachmentId` | Gets the attachment download entry point and redirects to the upstream URL |
+
+Error responses are normalized by `src/lib/tpmail/errors.ts`, and the response body includes fields such as `error.code`, `error.message`, `error.status`, and `error.retryable`.
+
+## Runtime Notes / Known Limitations
+
+- Homepage provider data comes from a direct server-side `listProviders()` call, so the first screen should not be understood as the frontend requesting `/api/providers` first.
+- Inbox updates rely on 15-second polling and do not include real-time push, WebSocket, or browser notification mechanisms.
+- Provider enablement can change as the code changes, so you should inspect each provider adapter's `descriptor.enabled` directly when checking status.
+- Because sessions live only in process memory, existing mailbox sessions and caches become invalid after the service restarts.
+- Under multi-instance deployment, the current implementation does not provide consistency guarantees for shared sessions or shared caches.
+- Whether attachments are available depends on whether the corresponding provider implements attachment URL resolution.
+
+## Code Map
+
+If you plan to continue development, these are usually the best entry points to start from:
+
+- `src/app/page.tsx`, homepage server-side provider injection
+- `src/components/tpmail/app-shell.tsx`, main frontend workspace
+- `src/app/api/**/route.ts`, API route entry points
+- `src/server/tpmail/service.ts`, service orchestration and validation
+- `src/server/tpmail/store.ts`, in-process sessions and cache
+- `src/server/tpmail/providers/*.ts`, provider adapters
+- `src/lib/tpmail/types.ts`, shared type contract
