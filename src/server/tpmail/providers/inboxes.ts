@@ -7,10 +7,12 @@ import {
   MailboxSession,
   MessageDetail,
   MessageSummary,
+  ProviderCredentialInput,
   ProviderContext,
   ProviderDescriptor,
   ProviderDomainOption,
 } from "@/lib/tpmail/types";
+import { normalizeApiKey } from "@/lib/tpmail/provider-credentials";
 import { parseAddress, randomLocalPart } from "@/lib/tpmail/utils";
 import { requestJson } from "@/server/tpmail/http";
 import { ProviderAdapter } from "@/server/tpmail/providers/base";
@@ -23,8 +25,8 @@ const descriptor: ProviderDescriptor = {
   name: "Inboxes.com",
   description: "商业 API，支持激活 inbox、读信与附件下载。",
   tier: "L3",
-  enabled: Boolean(apiKey),
-  productionReady: Boolean(apiKey),
+  enabled: true,
+  productionReady: true,
   accessMode: "api_key",
   requiresSecret: true,
   docsUrl: "https://inboxes.com/api_docs/",
@@ -36,7 +38,7 @@ const descriptor: ProviderDescriptor = {
     listDomains: true,
     customDomain: false,
   },
-  limitations: ["需要 Inboxes.com / RapidAPI key", "没有配置 INBOXES_API_KEY 时会自动保持禁用"],
+  limitations: ["需要 Inboxes.com / RapidAPI key", "可由用户在浏览器输入自己的 API key，或由站长配置 INBOXES_API_KEY"],
 };
 
 type InboxesDomainResponse = Array<{
@@ -75,18 +77,28 @@ type InboxesAttachmentDownloadResponse = {
   download_url?: string;
 };
 
-function requireApiKey() {
-  if (!apiKey) {
-    throw providerError("PROVIDER_DISABLED", "Inboxes.com 需要后端托管 API key，当前未启用。", 503, descriptor.id);
+function requireApiKey(candidate?: string) {
+  const resolved = normalizeApiKey(candidate) ?? apiKey;
+  if (!resolved) {
+    throw providerError(
+      "PROVIDER_DISABLED",
+      "Inboxes.com 需要 API key。请在当前浏览器输入你自己的 key，或由站长配置 INBOXES_API_KEY。",
+      503,
+      descriptor.id
+    );
   }
 
-  return apiKey;
+  return resolved;
 }
 
-function authHeaders() {
+function authHeaders(candidate?: string) {
   return {
-    apikey: requireApiKey(),
+    apikey: requireApiKey(candidate),
   };
+}
+
+function resolveMailboxApiKey(mailbox: ProviderContext["mailbox"]) {
+  return requireApiKey(mailbox.metadata?.apiKey);
 }
 
 function toSnippet(text: string) {
@@ -116,9 +128,9 @@ function toAttachments(items: InboxesAttachment[]): AttachmentSummary[] {
 
 export const inboxesAdapter: ProviderAdapter = {
   descriptor,
-  async listDomains() {
+  async listDomains(credentials?: ProviderCredentialInput) {
     const result = await requestJson<InboxesDomainResponse>(`${baseUrl}/domains`, {
-      headers: authHeaders(),
+      headers: authHeaders(credentials?.apiKey),
     }, {
       provider: descriptor.id,
     });
@@ -131,7 +143,8 @@ export const inboxesAdapter: ProviderAdapter = {
     }));
   },
   async createMailbox(input: CreateMailboxInput) {
-    const domains = await this.listDomains?.();
+    const inputApiKey = normalizeApiKey(input.credentials?.apiKey);
+    const domains = await this.listDomains?.({ apiKey: inputApiKey });
     const domain = input.domain?.trim() || domains?.find((item) => item.isDefault)?.domain || domains?.[0]?.domain;
 
     if (!domain) {
@@ -143,7 +156,7 @@ export const inboxesAdapter: ProviderAdapter = {
 
     await requestJson<{ ok: boolean }>(`${baseUrl}/inboxes/${encodeURIComponent(address)}`, {
       method: "POST",
-      headers: authHeaders(),
+      headers: authHeaders(inputApiKey),
     }, {
       provider: descriptor.id,
       expectedStatus: [200, 201],
@@ -158,13 +171,19 @@ export const inboxesAdapter: ProviderAdapter = {
       capabilities: descriptor.capabilities,
       createdAt: new Date().toISOString(),
       expiresAt: null,
+      metadata: inputApiKey
+        ? {
+            apiKey: inputApiKey,
+          }
+        : undefined,
     } satisfies MailboxSession;
   },
   async listMessages(context: ProviderContext) {
+    const resolvedApiKey = resolveMailboxApiKey(context.mailbox);
     const result = await requestJson<InboxesListResponse>(
       `${baseUrl}/inboxes/${encodeURIComponent(context.mailbox.address.address)}`,
       {
-        headers: authHeaders(),
+        headers: authHeaders(resolvedApiKey),
       },
       {
         provider: descriptor.id,
@@ -183,8 +202,9 @@ export const inboxesAdapter: ProviderAdapter = {
     }));
   },
   async getMessage(context: ProviderContext, messageId: string) {
+    const resolvedApiKey = resolveMailboxApiKey(context.mailbox);
     const result = await requestJson<InboxesMessageResponse>(`${baseUrl}/messages/${encodeURIComponent(messageId)}`, {
-      headers: authHeaders(),
+      headers: authHeaders(resolvedApiKey),
     }, {
       provider: descriptor.id,
     });
@@ -209,6 +229,7 @@ export const inboxesAdapter: ProviderAdapter = {
     } satisfies MessageDetail;
   },
   async getAttachmentUrl(_context: ProviderContext, messageId: string, attachmentId: string) {
+    const resolvedApiKey = resolveMailboxApiKey(_context.mailbox);
     const detail = await this.getMessage(_context, messageId);
     const attachment = detail.attachments.find((item) => item.id === attachmentId);
 
@@ -219,7 +240,7 @@ export const inboxesAdapter: ProviderAdapter = {
     const result = await requestJson<InboxesAttachmentDownloadResponse>(
       `${baseUrl}/attachments/${encodeURIComponent(messageId)}/${encodeURIComponent(attachmentId)}`,
       {
-        headers: authHeaders(),
+        headers: authHeaders(resolvedApiKey),
       },
       {
         provider: descriptor.id,

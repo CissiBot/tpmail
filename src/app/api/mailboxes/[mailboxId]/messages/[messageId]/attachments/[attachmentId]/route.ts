@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 
+import { readMailboxSnapshotFromRequest } from "@/lib/tpmail/mailbox-snapshot";
 import { toErrorResponse } from "@/lib/tpmail/errors";
 import { getAttachmentRedirect } from "@/server/tpmail/service";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: {
     params: Promise<{
       mailboxId: string;
@@ -15,7 +16,17 @@ export async function GET(
 ) {
   try {
     const { mailboxId, messageId, attachmentId } = await context.params;
-    const target = await getAttachmentRedirect(mailboxId, messageId, attachmentId);
+    const target = await getAttachmentRedirect(
+      mailboxId,
+      messageId,
+      attachmentId,
+      readMailboxSnapshotFromRequest(request)
+    );
+
+    if (request.headers.get("x-tpmail-download-mode") === "json") {
+      return NextResponse.json({ url: target });
+    }
+
     return NextResponse.redirect(target);
   } catch (error) {
     const result = toErrorResponse(error);

@@ -2,6 +2,7 @@ import {
   CreateMailboxInput,
   MessageDetail,
   MessageSummary,
+  ProviderCredentialInput,
   ProviderContext,
   ProviderDescriptor,
   ProviderDomainOption,
@@ -12,6 +13,6 @@ export interface ProviderAdapter {
   createMailbox(input: CreateMailboxInput): Promise<ProviderContext["mailbox"]>;
   listMessages(context: ProviderContext): Promise<MessageSummary[]>;
   getMessage(context: ProviderContext, messageId: string): Promise<MessageDetail>;
-  listDomains?(): Promise<ProviderDomainOption[]>;
+  listDomains?(credentials?: ProviderCredentialInput): Promise<ProviderDomainOption[]>;
   getAttachmentUrl?(context: ProviderContext, messageId: string, attachmentId: string): Promise<string>;
 }

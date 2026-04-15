@@ -3,6 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+  MAILBOX_SNAPSHOT_HEADER,
+  decodeMailboxSnapshot,
+  encodeMailboxSnapshot,
+  isBrowserManagedMailboxSession,
+  isMailboxSnapshot,
+} from "@/lib/tpmail/mailbox-snapshot";
+import { PROVIDER_API_KEY_HEADER } from "@/lib/tpmail/provider-credentials";
+import {
   MailboxSession,
   MessageDetail,
   MessageSummary,
@@ -10,13 +18,84 @@ import {
   ProviderDomainOption,
   ProviderId,
 } from "@/lib/tpmail/types";
-import { formatRelativeExpiry, randomLocalPart } from "@/lib/tpmail/utils";
+import { formatRelativeExpiry, parseAddress, randomLocalPart } from "@/lib/tpmail/utils";
+
+const MAILBOX_STORAGE_KEY = "tpmail:last-mailbox";
+const MAILBOX_HISTORY_STORAGE_KEY = "tpmail:mailbox-history";
+const PROVIDER_STORAGE_KEY = "tpmail:selected-provider";
+const PROVIDER_CREDENTIALS_STORAGE_KEY = "tpmail:provider-credentials";
+const MAX_RECENT_MAILBOXES = 8;
 
 type ErrorLike = {
   error?: {
     message?: string;
   };
 };
+
+type ProviderApiKeyState = Partial<Record<ProviderId, string>>;
+
+function getMailboxIdentity(mailbox: MailboxSession) {
+  return [
+    mailbox.provider,
+    mailbox.address.address,
+    mailbox.metadata?.token ?? "",
+    mailbox.metadata?.apiKey ?? "",
+  ].join("::");
+}
+
+function upsertRecentMailboxes(list: MailboxSession[], mailbox: MailboxSession) {
+  const nextIdentity = getMailboxIdentity(mailbox);
+  return [mailbox, ...list.filter((item) => getMailboxIdentity(item) !== nextIdentity)].slice(0, MAX_RECENT_MAILBOXES);
+}
+
+function removeRecentMailbox(list: MailboxSession[], mailbox: MailboxSession) {
+  const nextIdentity = getMailboxIdentity(mailbox);
+  return list.filter((item) => getMailboxIdentity(item) !== nextIdentity);
+}
+
+function parseStoredRecentMailboxes(value: string | null) {
+  if (!value) {
+    return [] as MailboxSession[];
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [] as MailboxSession[];
+    }
+
+    return parsed.filter(isMailboxSnapshot).slice(0, MAX_RECENT_MAILBOXES);
+  } catch {
+    return [] as MailboxSession[];
+  }
+}
+
+function parseStoredProviderApiKeys(value: string | null): ProviderApiKeyState {
+  if (!value) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [ProviderId, string] => typeof entry[1] === "string" && entry[1].trim().length > 0)
+    );
+  } catch {
+    return {};
+  }
+}
+
+function isImportedAddressUnverified(mailbox: MailboxSession) {
+  return mailbox.metadata?.addressVerified === "false";
+}
+
+function getMailboxDisplayAddress(mailbox: MailboxSession) {
+  return isImportedAddressUnverified(mailbox) ? `${mailbox.address.address}（未校验）` : mailbox.address.address;
+}
 
 type IconProps = {
   className?: string;
@@ -99,7 +178,7 @@ function formatAccessMode(mode: MailboxSession["accessMode"]) {
     case "public_address":
       return "公共地址访问";
     case "inbox_token":
-      return "后端托管 token";
+      return "邮箱 token";
     case "account_token":
       return "账号 token";
     case "api_key":
@@ -228,11 +307,16 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
   const [busy, setBusy] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingMessageId, setLoadingMessageId] = useState<string | null>(null);
+  const [downloadingAttachmentId, setDownloadingAttachmentId] = useState<string | null>(null);
   const [loadingDomains, setLoadingDomains] = useState(false);
   const [notice, setNotice] = useState<string>("选择一个聚合源，然后创建临时邮箱地址。系统会自动轮询收件箱。 ");
   const [aliasInput, setAliasInput] = useState("");
+  const [importAddressInput, setImportAddressInput] = useState("");
+  const [importTokenInput, setImportTokenInput] = useState("");
   const [domainOptions, setDomainOptions] = useState<ProviderDomainOption[]>([]);
   const [selectedDomain, setSelectedDomain] = useState("");
+  const [providerApiKeys, setProviderApiKeys] = useState<ProviderApiKeyState>({});
+  const [recentMailboxes, setRecentMailboxes] = useState<MailboxSession[]>([]);
 
   const selectedProviderMeta = useMemo(
     () => providers.find((provider) => provider.id === selectedProvider) ?? providers[0],
@@ -245,12 +329,127 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
     [providers, selectedProvider]
   );
 
+  const selectedProviderApiKey = providerApiKeys[selectedProvider]?.trim() ?? "";
+  const canImportSession = useMemo(() => {
+    const address = importAddressInput.trim();
+    if (!address) {
+      return false;
+    }
+
+    if (selectedProviderMeta.accessMode === "account_token" || selectedProviderMeta.accessMode === "inbox_token") {
+      return importTokenInput.trim().length > 0;
+    }
+
+    if (selectedProviderMeta.accessMode === "api_key") {
+      return selectedProviderApiKey.length > 0;
+    }
+
+    return true;
+  }, [importAddressInput, importTokenInput, selectedProviderApiKey, selectedProviderMeta.accessMode]);
+
+  const buildMailboxSnapshotValue = useCallback((currentMailbox: MailboxSession) => encodeMailboxSnapshot(currentMailbox), []);
+
+  const buildProviderCredentialHeaders = useCallback(
+    (providerId: ProviderId) => {
+      const apiKey = providerApiKeys[providerId]?.trim();
+      if (!apiKey) {
+        return undefined;
+      }
+
+      return {
+        [PROVIDER_API_KEY_HEADER]: apiKey,
+      };
+    },
+    [providerApiKeys]
+  );
+
+  const buildMailboxRequestHeaders = useCallback(
+    (currentMailbox?: MailboxSession | null) => {
+      if (!currentMailbox) {
+        return undefined;
+      }
+
+      return {
+        [MAILBOX_SNAPSHOT_HEADER]: buildMailboxSnapshotValue(currentMailbox),
+      };
+    },
+    [buildMailboxSnapshotValue]
+  );
+
+  const clearStoredMailbox = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.removeItem(MAILBOX_STORAGE_KEY);
+  }, []);
+
+  const validateImportAddress = useCallback(
+    (mailboxAddress: ReturnType<typeof parseAddress>) => {
+      if (selectedProvider === "maildrop" && mailboxAddress.domain !== "maildrop.cc") {
+        throw new Error("Maildrop 只支持导入 maildrop.cc 域名。 ");
+      }
+
+      if (domainOptions.length > 0 && selectedProvider !== "catchmail") {
+        const isAllowed = domainOptions.some((item) => item.domain === mailboxAddress.domain);
+        if (!isAllowed) {
+          throw new Error("输入的邮箱后缀不在当前 provider 的可用域名范围内。 ");
+        }
+      }
+    },
+    [domainOptions, selectedProvider]
+  );
+
+  const validateImportedMailbox = useCallback(
+    async (targetMailbox: MailboxSession) => {
+      const response = await fetch(`/api/mailboxes/${targetMailbox.id}/messages`, {
+        cache: "no-store",
+        headers: buildMailboxRequestHeaders(targetMailbox),
+      });
+      const data = (await response.json()) as { messages?: MessageSummary[] } & ErrorLike;
+
+      if (!response.ok || !data.messages) {
+        throw new Error(data.error?.message ?? "导入会话校验失败");
+      }
+
+      return data.messages;
+    },
+    [buildMailboxRequestHeaders]
+  );
+
+  const activateMailbox = useCallback(
+    (nextMailbox: MailboxSession, nextNotice?: string) => {
+      setSelectedProvider(nextMailbox.provider);
+      setAliasInput(nextMailbox.address.localPart);
+      setSelectedDomain(nextMailbox.address.domain);
+      setMailbox(nextMailbox);
+      setMessages([]);
+      setActiveMessage(null);
+      setDownloadingAttachmentId(null);
+      if (nextMailbox.metadata?.apiKey) {
+        setProviderApiKeys((current) => ({
+          ...current,
+          [nextMailbox.provider]: nextMailbox.metadata?.apiKey ?? "",
+        }));
+      }
+      setRecentMailboxes((current) => upsertRecentMailboxes(current, nextMailbox));
+      if (nextNotice) {
+        setNotice(nextNotice);
+      }
+    },
+    []
+  );
+
   function resetWorkspace(nextProvider: ProviderDescriptor) {
     setSelectedProvider(nextProvider.id);
     setMailbox(null);
     setMessages([]);
     setActiveMessage(null);
+    setDownloadingAttachmentId(null);
     setSelectedDomain("");
+    setImportAddressInput("");
+    setImportTokenInput("");
+    clearStoredMailbox();
     setNotice(
       nextProvider.enabled
         ? `已切换到 ${nextProvider.name}，现在可以创建新的临时邮箱。`
@@ -261,6 +460,7 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
   async function createMailboxSession(provider: ProviderId, overrides?: { alias?: string; domain?: string }) {
     const nextAlias = overrides?.alias ?? (aliasInput.trim() || undefined);
     const nextDomain = overrides?.domain ?? (selectedDomain || undefined);
+    const apiKey = providerApiKeys[provider]?.trim() || undefined;
 
     setBusy(true);
     setNotice("正在创建邮箱地址...");
@@ -278,6 +478,7 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
           provider,
           alias: nextAlias,
           domain: nextDomain,
+          apiKey,
         }),
       });
       const data = (await response.json()) as { mailbox?: MailboxSession } & ErrorLike;
@@ -286,12 +487,97 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
         throw new Error(data.error?.message ?? "创建邮箱失败");
       }
 
-      setMailbox(data.mailbox);
-      setNotice(`已创建 ${data.mailbox.providerLabel} 邮箱，系统正在同步最新收件箱。`);
+      activateMailbox(
+        data.mailbox,
+        isBrowserManagedMailboxSession(data.mailbox)
+          ? `已创建 ${data.mailbox.providerLabel} 邮箱，当前会话已保存在这个浏览器中。`
+          : `已创建 ${data.mailbox.providerLabel} 邮箱，系统正在同步最新收件箱。`
+      );
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "创建邮箱失败");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function importMailboxSession() {
+    const trimmedAddress = importAddressInput.trim();
+    if (!trimmedAddress) {
+      setNotice("请先输入要接管的邮箱地址。");
+      return;
+    }
+
+    let parsedAddress;
+    try {
+      parsedAddress = parseAddress(trimmedAddress);
+      validateImportAddress(parsedAddress);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "邮箱地址格式无效，请检查后重试。");
+      return;
+    }
+
+    const metadata: Record<string, string> = {};
+    if (selectedProviderMeta.accessMode === "account_token" || selectedProviderMeta.accessMode === "inbox_token") {
+      const token = importTokenInput.trim();
+      if (!token) {
+        setNotice("请先输入 token，再接管这个邮箱。 ");
+        return;
+      }
+
+      metadata.token = token;
+      metadata.addressVerified = "false";
+    }
+
+    if (selectedProviderMeta.accessMode === "api_key") {
+      if (!selectedProviderApiKey) {
+        setNotice("请先输入你的 API key，再接管这个邮箱。 ");
+        return;
+      }
+
+      metadata.apiKey = selectedProviderApiKey;
+    }
+
+    const importedMailbox: MailboxSession = {
+      id: globalThis.crypto.randomUUID(),
+      provider: selectedProviderMeta.id,
+      providerLabel: selectedProviderMeta.name,
+      address: parsedAddress,
+      accessMode: selectedProviderMeta.accessMode,
+      capabilities: selectedProviderMeta.capabilities,
+      createdAt: new Date().toISOString(),
+      expiresAt: null,
+      metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+    };
+
+    setBusy(true);
+    setNotice("正在校验你导入的邮箱会话...");
+
+    try {
+      await validateImportedMailbox(importedMailbox);
+      activateMailbox(
+        importedMailbox,
+        isImportedAddressUnverified(importedMailbox)
+          ? `已接管 ${importedMailbox.address.address}，但该地址尚未由上游校验。`
+          : `已接管 ${importedMailbox.address.address}，当前会话只保存在这个浏览器中。`
+      );
+      setImportAddressInput("");
+      setImportTokenInput("");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "导入会话校验失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function removeMailboxFromHistory(targetMailbox: MailboxSession) {
+    setRecentMailboxes((current) => removeRecentMailbox(current, targetMailbox));
+    if (mailbox && getMailboxIdentity(mailbox) === getMailboxIdentity(targetMailbox)) {
+      setMailbox(null);
+      setMessages([]);
+      setActiveMessage(null);
+      setDownloadingAttachmentId(null);
+      clearStoredMailbox();
+      setNotice("已从最近邮箱列表移除当前会话。 ");
     }
   }
 
@@ -318,10 +604,24 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
       try {
         const response = await fetch(`/api/mailboxes/${targetMailbox.id}/messages`, {
           cache: "no-store",
+          headers: buildMailboxRequestHeaders(targetMailbox),
         });
         const data = (await response.json()) as { messages?: MessageSummary[] } & ErrorLike;
 
         if (!response.ok || !data.messages) {
+          const shouldDiscardMailbox =
+            response.status === 404 ||
+            response.status === 410 ||
+            (isBrowserManagedMailboxSession(targetMailbox) && (response.status === 400 || response.status === 401));
+
+          if (shouldDiscardMailbox) {
+            clearStoredMailbox();
+            setRecentMailboxes((current) => removeRecentMailbox(current, targetMailbox));
+            setMailbox((current) => (current?.id === targetMailbox.id ? null : current));
+            setMessages([]);
+            setActiveMessage(null);
+          }
+
           throw new Error(data.error?.message ?? "收件箱拉取失败");
         }
 
@@ -346,7 +646,7 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
         setLoadingMessages(false);
       }
     },
-    [mailbox]
+    [buildMailboxRequestHeaders, clearStoredMailbox, mailbox]
   );
 
   async function openMessage(messageId: string) {
@@ -358,6 +658,7 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
     try {
       const response = await fetch(`/api/mailboxes/${mailbox.id}/messages/${messageId}`, {
         cache: "no-store",
+        headers: buildMailboxRequestHeaders(mailbox),
       });
       const data = (await response.json()) as { message?: MessageDetail } & ErrorLike;
 
@@ -374,6 +675,34 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
     }
   }
 
+  async function downloadAttachment(messageId: string, attachmentId: string) {
+    if (!mailbox) {
+      return;
+    }
+
+    setDownloadingAttachmentId(attachmentId);
+    try {
+      const response = await fetch(`/api/mailboxes/${mailbox.id}/messages/${messageId}/attachments/${attachmentId}`, {
+        cache: "no-store",
+        headers: {
+          ...buildMailboxRequestHeaders(mailbox),
+          "x-tpmail-download-mode": "json",
+        },
+      });
+
+      const data = (await response.json()) as { url?: string } & ErrorLike;
+      if (!response.ok || !data.url) {
+        throw new Error(data.error?.message ?? "附件下载失败");
+      }
+
+      window.open(data.url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "附件下载失败");
+    } finally {
+      setDownloadingAttachmentId(null);
+    }
+  }
+
   async function copyAddress() {
     if (!mailbox) {
       return;
@@ -381,11 +710,96 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
 
     try {
       await navigator.clipboard.writeText(mailbox.address.address);
-      setNotice("邮箱地址已复制到剪贴板。");
+      setNotice(isImportedAddressUnverified(mailbox) ? "邮箱地址已复制，但这是你导入时填写的地址，尚未由上游校验。" : "邮箱地址已复制到剪贴板。");
     } catch {
       setNotice("复制邮箱地址失败，请手动复制。");
     }
   }
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const storedProviderId = window.localStorage.getItem(PROVIDER_STORAGE_KEY);
+    const storedProvider = providers.find((provider) => provider.id === storedProviderId);
+    if (storedProvider) {
+      setSelectedProvider(storedProvider.id);
+    }
+
+    setProviderApiKeys(parseStoredProviderApiKeys(window.localStorage.getItem(PROVIDER_CREDENTIALS_STORAGE_KEY)));
+    setRecentMailboxes(parseStoredRecentMailboxes(window.localStorage.getItem(MAILBOX_HISTORY_STORAGE_KEY)));
+
+    const storedMailboxValue = window.localStorage.getItem(MAILBOX_STORAGE_KEY);
+    const storedMailbox = decodeMailboxSnapshot(storedMailboxValue);
+    if (!storedMailbox) {
+      if (storedMailboxValue) {
+        window.localStorage.removeItem(MAILBOX_STORAGE_KEY);
+      }
+      return;
+    }
+
+    const matchedProvider = providers.find((provider) => provider.id === storedMailbox.provider);
+    if (matchedProvider) {
+      setSelectedProvider(matchedProvider.id);
+    }
+
+    activateMailbox(
+      storedMailbox,
+      isBrowserManagedMailboxSession(storedMailbox)
+        ? "已从当前浏览器恢复邮箱，后续读信会直接使用本地凭据与快照。"
+        : "已从当前浏览器恢复邮箱，正在尝试复用服务端会话。"
+    );
+  }, [activateMailbox, providers]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(PROVIDER_STORAGE_KEY, selectedProvider);
+  }, [selectedProvider]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const nextEntries = Object.entries(providerApiKeys).filter((entry) => entry[1]?.trim());
+    if (nextEntries.length === 0) {
+      window.localStorage.removeItem(PROVIDER_CREDENTIALS_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(PROVIDER_CREDENTIALS_STORAGE_KEY, JSON.stringify(Object.fromEntries(nextEntries)));
+  }, [providerApiKeys]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (recentMailboxes.length === 0) {
+      window.localStorage.removeItem(MAILBOX_HISTORY_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(MAILBOX_HISTORY_STORAGE_KEY, JSON.stringify(recentMailboxes));
+  }, [recentMailboxes]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (!mailbox) {
+      window.localStorage.removeItem(MAILBOX_STORAGE_KEY);
+      return;
+    }
+
+    window.localStorage.setItem(MAILBOX_STORAGE_KEY, buildMailboxSnapshotValue(mailbox));
+    setRecentMailboxes((current) => upsertRecentMailboxes(current, mailbox));
+  }, [buildMailboxSnapshotValue, mailbox]);
 
   useEffect(() => {
     if (!mailbox) {
@@ -410,10 +824,17 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
         return;
       }
 
+      if (selectedProviderMeta.accessMode === "api_key" && !selectedProviderApiKey) {
+        setDomainOptions([]);
+        setSelectedDomain("");
+        return;
+      }
+
       setLoadingDomains(true);
       try {
         const response = await fetch(`/api/providers/${selectedProviderMeta.id}/domains`, {
           cache: "no-store",
+          headers: buildProviderCredentialHeaders(selectedProviderMeta.id),
         });
         const data = (await response.json()) as { domains?: ProviderDomainOption[] } & ErrorLike;
 
@@ -453,7 +874,7 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
     return () => {
       cancelled = true;
     };
-  }, [selectedProviderMeta]);
+  }, [buildProviderCredentialHeaders, selectedProviderApiKey, selectedProviderMeta]);
 
   return (
     <div className="min-h-dvh bg-[#1d1f20] text-stone-100">
@@ -561,7 +982,12 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
                   <div className="space-y-2">
                     <span className="text-xs text-stone-500">邮箱后缀</span>
                     <div className="min-h-12 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-[15px] text-stone-100">
-                      {selectedDomain || (loadingDomains ? "载入中..." : "自动分配 / 固定域名")}
+                      {selectedDomain ||
+                        (selectedProviderMeta.accessMode === "api_key" && !selectedProviderApiKey
+                          ? "先输入 API key 再载入域名"
+                          : loadingDomains
+                            ? "载入中..."
+                            : "自动分配 / 固定域名")}
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {domainOptions.length === 0 ? (
@@ -591,11 +1017,79 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
                     </div>
                   </div>
 
+                  {selectedProviderMeta.accessMode === "api_key" ? (
+                    <label className="block space-y-2">
+                      <span className="text-xs text-stone-500">你的 API key</span>
+                      <input
+                        value={selectedProviderApiKey}
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          setProviderApiKeys((current) => {
+                            if (!nextValue.trim()) {
+                              const nextState = { ...current };
+                              delete nextState[selectedProvider];
+                              return nextState;
+                            }
+
+                            return {
+                              ...current,
+                              [selectedProvider]: nextValue,
+                            };
+                          });
+                        }}
+                        placeholder="粘贴你自己的 Inboxes / RapidAPI key"
+                        className="min-h-12 w-full rounded-2xl border border-white/8 bg-white/[0.03] px-4 text-[15px] text-stone-100 outline-none placeholder:text-stone-500 focus:border-[#4e6bd8]"
+                      />
+                      <p className="text-xs leading-6 text-stone-500">只保存在当前浏览器，不会写进服务端环境变量。</p>
+                    </label>
+                  ) : null}
+
+                  <div className="space-y-3 rounded-[24px] border border-white/8 bg-white/[0.02] p-4">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.18em] text-stone-500">接管已有会话</p>
+                      <p className="mt-2 text-sm leading-7 text-stone-400">
+                        {selectedProviderMeta.accessMode === "public_address"
+                          ? "输入已有邮箱地址后，直接在当前浏览器继续查看收件箱。"
+                          : selectedProviderMeta.accessMode === "api_key"
+                            ? "输入已有邮箱地址，并结合你自己的 API key，在当前浏览器继续查看收件箱。"
+                            : "输入已有邮箱地址和 token，把这个会话接管到当前浏览器。"}
+                      </p>
+                    </div>
+                    <label className="block space-y-2">
+                      <span className="text-xs text-stone-500">已有邮箱地址</span>
+                      <input
+                        value={importAddressInput}
+                        onChange={(event) => setImportAddressInput(event.target.value.trim())}
+                        placeholder="例如 hello@example.com"
+                        className="min-h-12 w-full rounded-2xl border border-white/8 bg-white/[0.03] px-4 text-[15px] text-stone-100 outline-none placeholder:text-stone-500 focus:border-[#4e6bd8]"
+                      />
+                    </label>
+                    {selectedProviderMeta.accessMode === "account_token" || selectedProviderMeta.accessMode === "inbox_token" ? (
+                      <label className="block space-y-2">
+                        <span className="text-xs text-stone-500">访问 token</span>
+                        <input
+                          value={importTokenInput}
+                          onChange={(event) => setImportTokenInput(event.target.value.trim())}
+                          placeholder={selectedProviderMeta.accessMode === "inbox_token" ? "粘贴 inbox token" : "粘贴账号 token"}
+                          className="min-h-12 w-full rounded-2xl border border-white/8 bg-white/[0.03] px-4 text-[15px] text-stone-100 outline-none placeholder:text-stone-500 focus:border-[#4e6bd8]"
+                        />
+                      </label>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={importMailboxSession}
+                      disabled={!canImportSession}
+                      className="min-h-11 w-full rounded-2xl border border-white/8 bg-white/[0.03] px-4 text-sm font-medium text-stone-200 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:text-stone-600"
+                    >
+                      接管这个邮箱
+                    </button>
+                  </div>
+
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => createMailboxSession(selectedProvider)}
-                      disabled={busy || !selectedProviderMeta.enabled}
+                      disabled={busy || !selectedProviderMeta.enabled || (selectedProviderMeta.accessMode === "api_key" && !selectedProviderApiKey)}
                       className="min-h-12 flex-1 rounded-2xl bg-[#1d1f47] px-4 text-sm font-semibold text-[#7cc0ff] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-45"
                     >
                       {busy ? "创建中..." : mailbox ? "重建地址" : "创建临时邮箱"}
@@ -603,7 +1097,7 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
                     <button
                       type="button"
                       onClick={createRandomMailbox}
-                      disabled={busy || !selectedProviderMeta.enabled}
+                      disabled={busy || !selectedProviderMeta.enabled || (selectedProviderMeta.accessMode === "api_key" && !selectedProviderApiKey)}
                       aria-label="随机生成邮箱"
                       className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/8 bg-white/[0.03] text-stone-300 transition hover:bg-white/[0.05] disabled:cursor-not-allowed disabled:opacity-45"
                     >
@@ -621,10 +1115,53 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
                     rel="noreferrer"
                     className="inline-flex items-center gap-2 text-sm text-stone-300 transition hover:text-white"
                   >
-                    查看文档
+                    {selectedProviderMeta.accessMode === "api_key" ? "申请 API key / 查看文档" : "查看文档"}
                     <ExternalIcon />
                   </a>
                 </div>
+
+                {recentMailboxes.length > 0 ? (
+                  <div className="space-y-3 border-t border-white/8 pt-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-medium text-stone-200">最近邮箱</p>
+                      <span className="text-xs text-stone-500">保存在本地浏览器</span>
+                    </div>
+                    <div className="space-y-2">
+                      {recentMailboxes.map((item) => {
+                        const activeMailbox = mailbox ? getMailboxIdentity(mailbox) === getMailboxIdentity(item) : false;
+
+                        return (
+                          <div key={getMailboxIdentity(item)} className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                activateMailbox(
+                                  item,
+                                  `已从最近邮箱列表切换到 ${getMailboxDisplayAddress(item)}。`
+                                )
+                              }
+                              className={`min-h-11 flex-1 rounded-2xl border px-3 text-left text-sm transition ${
+                                activeMailbox
+                                  ? "border-transparent bg-[#1d1f47] text-[#9bd0ff]"
+                                  : "border-white/8 bg-white/[0.02] text-stone-300 hover:bg-white/[0.04]"
+                              }`}
+                            >
+                              <span className="block truncate font-mono text-[13px]">{getMailboxDisplayAddress(item)}</span>
+                              <span className="mt-1 block text-[11px] text-stone-500">{item.providerLabel}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeMailboxFromHistory(item)}
+                              className="inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-white/8 bg-white/[0.02] text-xs text-stone-400 transition hover:bg-white/[0.04] hover:text-white"
+                            >
+                              删除
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </section>
           </div>
@@ -639,7 +1176,7 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
                     <InboxIcon className="h-4.5 w-4.5" />
                   </span>
                   <span className="min-w-0 flex-1 truncate font-mono text-[15px]">
-                    {mailbox?.address.address ?? `${selectedProviderMeta.name} · 尚未创建邮箱`}
+                      {mailbox ? getMailboxDisplayAddress(mailbox) : `${selectedProviderMeta.name} · 尚未创建邮箱`}
                   </span>
                   <button
                     type="button"
@@ -752,14 +1289,15 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
                                     {attachment.filename}（暂不支持）
                                   </span>
                                 ) : (
-                                  <a
+                                  <button
                                     key={attachment.id}
-                                    href={`/api/mailboxes/${activeMessage.mailboxId}/messages/${activeMessage.id}/attachments/${attachment.id}`}
+                                    type="button"
+                                    onClick={() => downloadAttachment(activeMessage.id, attachment.id)}
                                     className="inline-flex min-h-10 items-center gap-2 rounded-full border border-[#31356a] bg-[#1d1f47] px-4 text-xs text-[#8cc8ff] transition hover:brightness-110"
                                   >
                                     <PaperclipIcon />
-                                    下载 {attachment.filename}
-                                  </a>
+                                    {downloadingAttachmentId === attachment.id ? `下载中 ${attachment.filename}` : `下载 ${attachment.filename}`}
+                                  </button>
                                 )
                               )}
                             </div>
@@ -822,7 +1360,7 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
                       <button
                         type="button"
                         onClick={() => createMailboxSession(selectedProvider)}
-                        disabled={busy || !selectedProviderMeta.enabled}
+                        disabled={busy || !selectedProviderMeta.enabled || (selectedProviderMeta.accessMode === "api_key" && !selectedProviderApiKey)}
                         className="min-h-12 rounded-2xl bg-[#1d1f47] px-6 text-sm font-semibold text-[#8cc8ff] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-45"
                       >
                         {busy ? "创建中..." : `创建 ${selectedProviderMeta.name} 邮箱`}

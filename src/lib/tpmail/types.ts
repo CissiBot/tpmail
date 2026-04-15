@@ -103,8 +103,13 @@ export interface ProviderContext {
   mailbox: MailboxSession;
 }
 
+export interface ProviderCredentialInput {
+  apiKey?: string;
+}
+
 export interface CreateMailboxInput {
   provider: ProviderId;
   alias?: string;
   domain?: string;
+  credentials?: ProviderCredentialInput;
 }

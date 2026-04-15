@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 
+import { normalizeApiKey } from "@/lib/tpmail/provider-credentials";
 import { toErrorResponse } from "@/lib/tpmail/errors";
-import { createMailbox, toPublicMailbox } from "@/server/tpmail/service";
+import { createMailbox, toClientMailbox } from "@/server/tpmail/service";
 
 export async function POST(request: Request) {
   try {
@@ -9,6 +10,7 @@ export async function POST(request: Request) {
       provider?: string;
       alias?: string;
       domain?: string;
+      apiKey?: string;
     };
 
     if (!body.provider) {
@@ -29,9 +31,12 @@ export async function POST(request: Request) {
       provider: body.provider as never,
       alias: body.alias,
       domain: body.domain,
+      credentials: {
+        apiKey: normalizeApiKey(body.apiKey),
+      },
     });
 
-    return NextResponse.json({ mailbox: toPublicMailbox(mailbox) }, { status: 201 });
+    return NextResponse.json({ mailbox: toClientMailbox(mailbox) }, { status: 201 });
   } catch (error) {
     const result = toErrorResponse(error);
     return NextResponse.json(result.body, { status: result.status });

@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  PublicMailboxSession,
+  isBrowserManagedMailboxSession,
+} from "@/lib/tpmail/mailbox-snapshot";
 import { providerError } from "@/lib/tpmail/errors";
-import { CreateMailboxInput, MailboxSession, ProviderDomainOption, ProviderId } from "@/lib/tpmail/types";
+import {
+  CreateMailboxInput,
+  MailboxSession,
+  ProviderCredentialInput,
+  ProviderDomainOption,
+  ProviderId,
+} from "@/lib/tpmail/types";
 import { deleteMailbox, readCache, readMailbox, saveMailbox, writeCache } from "@/server/tpmail/store";
 import { getProviderAdapter, listProviderDescriptors } from "@/server/tpmail/providers";
 
@@ -53,15 +63,36 @@ export function listProvidersWithCacheInfo() {
   };
 }
 
-export async function listProviderDomains(providerId: ProviderId) {
-  return (await listProviderDomainsWithCacheInfo(providerId)).domains;
+export async function listProviderDomains(providerId: ProviderId, credentials?: ProviderCredentialInput) {
+  return (await listProviderDomainsWithCacheInfo(providerId, credentials)).domains;
 }
 
-export async function listProviderDomainsWithCacheInfo(providerId: ProviderId) {
+export async function listProviderDomainsWithCacheInfo(providerId: ProviderId, credentials?: ProviderCredentialInput) {
   const adapter = getProviderAdapter(providerId);
 
   if (!adapter) {
     throw providerError("INVALID_REQUEST", "未知 provider。", 400, providerId);
+  }
+
+  const apiKey = credentials?.apiKey?.trim();
+  if (apiKey) {
+    const domains = adapter.listDomains
+      ? await adapter.listDomains({ apiKey })
+      : adapter.descriptor.defaultDomain
+        ? [
+            {
+              provider: adapter.descriptor.id,
+              domain: adapter.descriptor.defaultDomain,
+              label: adapter.descriptor.defaultDomain,
+              isDefault: true,
+            },
+          ]
+        : [];
+
+    return {
+      domains,
+      cacheStatus: "skip" as const,
+    };
   }
 
   const cacheKey = `providers:${providerId}:domains`;
@@ -74,7 +105,7 @@ export async function listProviderDomainsWithCacheInfo(providerId: ProviderId) {
   }
 
   const domains = adapter.listDomains
-    ? await adapter.listDomains()
+    ? await adapter.listDomains(credentials)
     : adapter.descriptor.defaultDomain
       ? [
           {
@@ -113,7 +144,7 @@ export async function createMailbox(input: CreateMailboxInput) {
     if (adapter.descriptor.capabilities.customDomain && !adapter.listDomains) {
       // 由 provider 自身决定自定义域名是否合法。
     } else {
-      const allowedDomains = await listProviderDomains(input.provider);
+      const allowedDomains = await listProviderDomains(input.provider, input.credentials);
 
       if (allowedDomains.length === 0) {
         throw providerError(
@@ -148,7 +179,12 @@ export async function createMailbox(input: CreateMailboxInput) {
     mailbox.id = randomUUID();
   }
 
-  saveMailbox(mailbox);
+  if (isBrowserManagedMailboxSession(mailbox)) {
+    deleteMailbox(mailbox.id);
+  } else {
+    saveMailbox(mailbox);
+  }
+
   return mailbox;
 }
 
@@ -165,8 +201,29 @@ export function toPublicMailbox(mailbox: MailboxSession) {
   } satisfies Omit<MailboxSession, "metadata">;
 }
 
-export function getMailboxOrThrow(mailboxId: string) {
-  const mailbox = readMailbox(mailboxId);
+export function toClientMailbox(mailbox: MailboxSession) {
+  return isBrowserManagedMailboxSession(mailbox) ? mailbox : toPublicMailbox(mailbox);
+}
+
+function resolveMailbox(mailboxId: string, fallbackMailbox?: PublicMailboxSession | null) {
+  const storedMailbox = readMailbox(mailboxId);
+  if (storedMailbox) {
+    return storedMailbox;
+  }
+
+  if (
+    fallbackMailbox &&
+    fallbackMailbox.id === mailboxId &&
+    isBrowserManagedMailboxSession(fallbackMailbox)
+  ) {
+    return fallbackMailbox;
+  }
+
+  return null;
+}
+
+export function getMailboxOrThrow(mailboxId: string, fallbackMailbox?: PublicMailboxSession | null) {
+  const mailbox = resolveMailbox(mailboxId, fallbackMailbox);
   if (!mailbox) {
     throw providerError("NOT_FOUND", "邮箱会话不存在或已失效。", 404);
   }
@@ -179,20 +236,29 @@ export function getMailboxOrThrow(mailboxId: string) {
   return mailbox;
 }
 
-export async function listMailboxMessages(mailboxId: string) {
-  const mailbox = getMailboxOrThrow(mailboxId);
+export async function listMailboxMessages(mailboxId: string, fallbackMailbox?: PublicMailboxSession | null) {
+  const mailbox = getMailboxOrThrow(mailboxId, fallbackMailbox);
   const adapter = getProviderAdapter(mailbox.provider);
   return adapter.listMessages({ mailbox });
 }
 
-export async function getMailboxMessage(mailboxId: string, messageId: string) {
-  const mailbox = getMailboxOrThrow(mailboxId);
+export async function getMailboxMessage(
+  mailboxId: string,
+  messageId: string,
+  fallbackMailbox?: PublicMailboxSession | null
+) {
+  const mailbox = getMailboxOrThrow(mailboxId, fallbackMailbox);
   const adapter = getProviderAdapter(mailbox.provider as ProviderId);
   return adapter.getMessage({ mailbox }, messageId);
 }
 
-export async function getAttachmentRedirect(mailboxId: string, messageId: string, attachmentId: string) {
-  const mailbox = getMailboxOrThrow(mailboxId);
+export async function getAttachmentRedirect(
+  mailboxId: string,
+  messageId: string,
+  attachmentId: string,
+  fallbackMailbox?: PublicMailboxSession | null
+) {
+  const mailbox = getMailboxOrThrow(mailboxId, fallbackMailbox);
   const adapter = getProviderAdapter(mailbox.provider);
   if (!adapter.getAttachmentUrl) {
     throw providerError(

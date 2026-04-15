@@ -5,14 +5,19 @@ export function randomLocalPart() {
 }
 
 export function parseAddress(address: string): MailAddress {
-  const [localPart, domain] = address.split("@");
+  const trimmed = address.trim().toLowerCase();
+  const parts = trimmed.split("@");
+  if (parts.length !== 2) {
+    throw new Error("invalid email address");
+  }
 
-  if (!localPart || !domain) {
+  const [localPart, domain] = parts;
+  if (!localPart || !domain || /\s/.test(trimmed) || domain.startsWith(".") || domain.endsWith(".")) {
     throw new Error("invalid email address");
   }
 
   return {
-    address,
+    address: trimmed,
     localPart,
     domain,
   };
