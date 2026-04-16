@@ -94,3 +94,50 @@ textarea {
 iframe {
   color-scheme: light;
 }
+
+@keyframes mailbox-refresh-fill-a {
+  from {
+    transform: scaleX(0);
+  }
+
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes mailbox-refresh-fill-b {
+  from {
+    transform: scaleX(0);
+  }
+
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.mailbox-refresh-fill-layer {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 0%;
+  border-radius: 22px;
+  background: linear-gradient(90deg, rgba(124, 192, 255, 0.22), rgba(76, 95, 198, 0.3));
+}
+
+.mailbox-refresh-fill-layer.mailbox-refresh-fill-a,
+.mailbox-refresh-fill-layer.mailbox-refresh-fill-b {
+  width: 100%;
+  transform-origin: left center;
+  animation-duration: 10s;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+  will-change: transform;
+}
+
+.mailbox-refresh-fill-layer.mailbox-refresh-fill-a {
+  animation-name: mailbox-refresh-fill-a;
+}
+
+.mailbox-refresh-fill-layer.mailbox-refresh-fill-b {
+  animation-name: mailbox-refresh-fill-b;
+}
