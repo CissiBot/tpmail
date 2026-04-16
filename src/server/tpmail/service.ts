@@ -19,6 +19,11 @@ const PROVIDER_CACHE_KEY = "providers:descriptors";
 const PROVIDER_CACHE_TTL_MS = 5 * 60 * 1000;
 const PROVIDER_DOMAINS_CACHE_TTL_MS = 3 * 60 * 1000;
 const ALIAS_PATTERN = /^[a-zA-Z0-9._-]+$/;
+const ATTACHMENT_ALLOWED_ORIGINS: Partial<Record<ProviderId, readonly string[]>> = {
+  catchmail: ["https://api.catchmail.io"],
+  duckmail: ["https://api.duckmail.sbs"],
+  mail_tm: ["https://api.mail.tm"],
+};
 
 function normalizeAlias(alias?: string) {
   const trimmed = alias?.trim();
@@ -40,6 +45,64 @@ function normalizeAlias(alias?: string) {
   }
 
   return trimmed;
+}
+
+function validateAttachmentRedirectUrl(providerId: ProviderId, rawUrl: string) {
+  let url: URL;
+
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw providerError(
+      "ATTACHMENT_UNAVAILABLE",
+      "附件下载地址无效。",
+      502,
+      providerId,
+      true
+    );
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw providerError(
+      "ATTACHMENT_UNAVAILABLE",
+      "附件下载地址协议不受支持。",
+      502,
+      providerId,
+      false,
+      {
+        protocol: url.protocol,
+      }
+    );
+  }
+
+  if (!ATTACHMENT_ALLOWED_ORIGINS[providerId] && url.protocol !== "https:") {
+    throw providerError(
+      "ATTACHMENT_UNAVAILABLE",
+      "附件下载地址必须使用 HTTPS。",
+      502,
+      providerId,
+      false,
+      {
+        protocol: url.protocol,
+      }
+    );
+  }
+
+  const allowedOrigins = ATTACHMENT_ALLOWED_ORIGINS[providerId];
+  if (allowedOrigins && !allowedOrigins.includes(url.origin)) {
+    throw providerError(
+      "ATTACHMENT_UNAVAILABLE",
+      "附件下载地址不在当前 provider 的允许范围内。",
+      502,
+      providerId,
+      true,
+      {
+        origin: url.origin,
+      }
+    );
+  }
+
+  return url.toString();
 }
 
 export function listProviders() {
@@ -248,7 +311,7 @@ export async function getMailboxMessage(
   fallbackMailbox?: PublicMailboxSession | null
 ) {
   const mailbox = getMailboxOrThrow(mailboxId, fallbackMailbox);
-  const adapter = getProviderAdapter(mailbox.provider as ProviderId);
+  const adapter = getProviderAdapter(mailbox.provider);
   return adapter.getMessage({ mailbox }, messageId);
 }
 
@@ -269,5 +332,6 @@ export async function getAttachmentRedirect(
     );
   }
 
-  return adapter.getAttachmentUrl({ mailbox }, messageId, attachmentId);
+  const target = await adapter.getAttachmentUrl({ mailbox }, messageId, attachmentId);
+  return validateAttachmentRedirectUrl(mailbox.provider, target);
 }

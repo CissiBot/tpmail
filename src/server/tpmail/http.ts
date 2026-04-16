@@ -1,7 +1,66 @@
-import { providerError } from "@/lib/tpmail/errors";
+import { AppError, providerError } from "@/lib/tpmail/errors";
 import { ProviderId } from "@/lib/tpmail/types";
 
 const DEFAULT_TIMEOUT_MS = 12000;
+
+function shouldTreatAsJson(response: Response, text: string) {
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (contentType.includes("application/json") || contentType.includes("+json")) {
+    return true;
+  }
+
+  const trimmed = text.trim();
+  return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
+
+function parseJsonBody<T>(response: Response, text: string, provider?: ProviderId): T {
+  if (!shouldTreatAsJson(response, text)) {
+    throw providerError(
+      "PROVIDER_RESPONSE_INVALID",
+      "上游 provider 返回了无法识别的响应格式。",
+      502,
+      provider,
+      true,
+      text.trim()
+        ? {
+            contentType: response.headers.get("content-type") ?? undefined,
+            body: text,
+          }
+        : {
+            contentType: response.headers.get("content-type") ?? undefined,
+          }
+    );
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw providerError(
+      "PROVIDER_RESPONSE_INVALID",
+      "上游 provider 返回了无效的 JSON 响应。",
+      502,
+      provider,
+      true,
+      {
+        contentType: response.headers.get("content-type") ?? undefined,
+        body: text,
+      }
+    );
+  }
+}
+
+function tryParseJsonBody(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
 
 function withTimeout(init?: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const controller = new AbortController();
@@ -39,13 +98,8 @@ export async function requestJson<T>(
 
     const expectedStatus = options?.expectedStatus ?? [200];
     if (!expectedStatus.includes(response.status)) {
-      let details: unknown;
-
-      try {
-        details = await response.json();
-      } catch {
-        details = await response.text();
-      }
+      const rawBody = await response.text();
+      const details = shouldTreatAsJson(response, rawBody) ? (tryParseJsonBody(rawBody) ?? rawBody) : rawBody;
 
       throw providerError(
         response.status === 429 ? "PROVIDER_RATE_LIMITED" : "PROVIDER_REQUEST_FAILED",
@@ -57,13 +111,14 @@ export async function requestJson<T>(
       );
     }
 
-    return (await response.json()) as T;
+    const rawBody = await response.text();
+    return parseJsonBody<T>(response, rawBody, options?.provider);
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw providerError("PROVIDER_TIMEOUT", "上游 provider 响应超时。", 504, options?.provider, true);
     }
 
-    if (error instanceof Error && error.name === "AppError") {
+    if (error instanceof AppError) {
       throw error;
     }
 

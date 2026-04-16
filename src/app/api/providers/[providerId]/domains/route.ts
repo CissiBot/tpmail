@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 
+import { providerError, toErrorResponse } from "@/lib/tpmail/errors";
 import { readApiKeyFromRequest } from "@/lib/tpmail/provider-credentials";
-import { toErrorResponse } from "@/lib/tpmail/errors";
+import { isProviderId } from "@/lib/tpmail/types";
 import { listProviderDomainsWithCacheInfo } from "@/server/tpmail/service";
 
 export async function GET(
@@ -10,7 +11,11 @@ export async function GET(
 ) {
   try {
     const { providerId } = await context.params;
-    const { domains, cacheStatus } = await listProviderDomainsWithCacheInfo(providerId as never, {
+    if (!isProviderId(providerId)) {
+      throw providerError("INVALID_REQUEST", "未知 provider。", 400);
+    }
+
+    const { domains, cacheStatus } = await listProviderDomainsWithCacheInfo(providerId, {
       apiKey: readApiKeyFromRequest(request),
     });
     return NextResponse.json(

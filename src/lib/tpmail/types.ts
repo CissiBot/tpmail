@@ -1,11 +1,18 @@
-export type ProviderId =
-  | "catchmail"
-  | "maildrop"
-  | "inboxes"
-  | "mail_tm"
-  | "duckmail"
-  | "tempmail_lol"
-  | "temp_mail_io";
+export const PROVIDER_IDS = [
+  "catchmail",
+  "maildrop",
+  "inboxes",
+  "mail_tm",
+  "duckmail",
+  "tempmail_lol",
+  "temp_mail_io",
+] as const;
+
+export type ProviderId = (typeof PROVIDER_IDS)[number];
+
+export function isProviderId(value: unknown): value is ProviderId {
+  return typeof value === "string" && PROVIDER_IDS.includes(value as ProviderId);
+}
 
 export type AccessMode =
   | "public_address"

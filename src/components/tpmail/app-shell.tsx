@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   MAILBOX_SNAPSHOT_HEADER,
@@ -33,6 +33,16 @@ type ErrorLike = {
 };
 
 type ProviderApiKeyState = Partial<Record<ProviderId, string>>;
+
+type RequestTracker = {
+  requestId: number;
+  controller: AbortController | null;
+};
+
+type MailboxScopedRequestTracker = RequestTracker & {
+  mailboxScope: number;
+  mailboxIdentity: string | null;
+};
 
 function getMailboxIdentity(mailbox: MailboxSession) {
   return [
@@ -317,6 +327,12 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
   const [selectedDomain, setSelectedDomain] = useState("");
   const [providerApiKeys, setProviderApiKeys] = useState<ProviderApiKeyState>({});
   const [recentMailboxes, setRecentMailboxes] = useState<MailboxSession[]>([]);
+  const mailboxRef = useRef<MailboxSession | null>(null);
+  const mailboxScopeRef = useRef(0);
+  const sessionRequestRef = useRef<RequestTracker>({ requestId: 0, controller: null });
+  const refreshRequestRef = useRef<MailboxScopedRequestTracker>({ requestId: 0, controller: null, mailboxScope: 0, mailboxIdentity: null });
+  const openMessageRequestRef = useRef<MailboxScopedRequestTracker>({ requestId: 0, controller: null, mailboxScope: 0, mailboxIdentity: null });
+  const attachmentRequestRef = useRef<MailboxScopedRequestTracker>({ requestId: 0, controller: null, mailboxScope: 0, mailboxIdentity: null });
 
   const selectedProviderMeta = useMemo(
     () => providers.find((provider) => provider.id === selectedProvider) ?? providers[0],
@@ -376,6 +392,79 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
     [buildMailboxSnapshotValue]
   );
 
+  const abortRequestTracker = useCallback((tracker: RequestTracker | MailboxScopedRequestTracker) => {
+    tracker.controller?.abort();
+    tracker.controller = null;
+  }, []);
+
+  const beginSessionRequest = useCallback(() => {
+    abortRequestTracker(sessionRequestRef.current);
+    sessionRequestRef.current.requestId += 1;
+    sessionRequestRef.current.controller = new AbortController();
+
+    return {
+      requestId: sessionRequestRef.current.requestId,
+      controller: sessionRequestRef.current.controller,
+    };
+  }, [abortRequestTracker]);
+
+  const isCurrentSessionRequest = useCallback((requestId: number) => sessionRequestRef.current.requestId === requestId, []);
+
+  const invalidateSessionRequest = useCallback(
+    (options?: { clearBusy?: boolean }) => {
+      abortRequestTracker(sessionRequestRef.current);
+      sessionRequestRef.current.requestId += 1;
+
+      if (options?.clearBusy ?? true) {
+        setBusy(false);
+      }
+    },
+    [abortRequestTracker]
+  );
+
+  const beginMailboxScopedRequest = useCallback(
+    (tracker: { current: MailboxScopedRequestTracker }, targetMailbox: MailboxSession) => {
+      abortRequestTracker(tracker.current);
+      tracker.current.requestId += 1;
+      tracker.current.mailboxScope = mailboxScopeRef.current;
+      tracker.current.mailboxIdentity = getMailboxIdentity(targetMailbox);
+      tracker.current.controller = new AbortController();
+
+      return {
+        requestId: tracker.current.requestId,
+        mailboxScope: tracker.current.mailboxScope,
+        mailboxIdentity: tracker.current.mailboxIdentity,
+        controller: tracker.current.controller,
+      };
+    },
+    [abortRequestTracker]
+  );
+
+  const isCurrentMailboxScopedRequest = useCallback(
+    (tracker: { current: MailboxScopedRequestTracker }, requestId: number, mailboxScope: number, mailboxIdentity: string) => {
+      const currentMailboxIdentity = mailboxRef.current ? getMailboxIdentity(mailboxRef.current) : null;
+
+      return (
+        tracker.current.requestId === requestId &&
+        tracker.current.mailboxScope === mailboxScope &&
+        tracker.current.mailboxIdentity === mailboxIdentity &&
+        currentMailboxIdentity === mailboxIdentity &&
+        mailboxScopeRef.current === mailboxScope
+      );
+    },
+    []
+  );
+
+  const invalidateMailboxScopedRequests = useCallback(() => {
+    mailboxScopeRef.current += 1;
+    abortRequestTracker(refreshRequestRef.current);
+    abortRequestTracker(openMessageRequestRef.current);
+    abortRequestTracker(attachmentRequestRef.current);
+    setLoadingMessages(false);
+    setLoadingMessageId(null);
+    setDownloadingAttachmentId(null);
+  }, [abortRequestTracker]);
+
   const clearStoredMailbox = useCallback(() => {
     if (typeof window === "undefined") {
       return;
@@ -401,9 +490,10 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
   );
 
   const validateImportedMailbox = useCallback(
-    async (targetMailbox: MailboxSession) => {
+    async (targetMailbox: MailboxSession, signal?: AbortSignal) => {
       const response = await fetch(`/api/mailboxes/${targetMailbox.id}/messages`, {
         cache: "no-store",
+        signal,
         headers: buildMailboxRequestHeaders(targetMailbox),
       });
       const data = (await response.json()) as { messages?: MessageSummary[] } & ErrorLike;
@@ -419,6 +509,8 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
 
   const activateMailbox = useCallback(
     (nextMailbox: MailboxSession, nextNotice?: string) => {
+      invalidateSessionRequest();
+      invalidateMailboxScopedRequests();
       setSelectedProvider(nextMailbox.provider);
       setAliasInput(nextMailbox.address.localPart);
       setSelectedDomain(nextMailbox.address.domain);
@@ -437,10 +529,12 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
         setNotice(nextNotice);
       }
     },
-    []
+    [invalidateMailboxScopedRequests, invalidateSessionRequest]
   );
 
   function resetWorkspace(nextProvider: ProviderDescriptor) {
+    invalidateSessionRequest();
+    invalidateMailboxScopedRequests();
     setSelectedProvider(nextProvider.id);
     setMailbox(null);
     setMessages([]);
@@ -461,16 +555,15 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
     const nextAlias = overrides?.alias ?? (aliasInput.trim() || undefined);
     const nextDomain = overrides?.domain ?? (selectedDomain || undefined);
     const apiKey = providerApiKeys[provider]?.trim() || undefined;
+    const { requestId, controller } = beginSessionRequest();
 
     setBusy(true);
     setNotice("正在创建邮箱地址...");
-    setMailbox(null);
-    setMessages([]);
-    setActiveMessage(null);
 
     try {
       const response = await fetch("/api/mailboxes", {
         method: "POST",
+        signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
         },
@@ -487,6 +580,10 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
         throw new Error(data.error?.message ?? "创建邮箱失败");
       }
 
+      if (!isCurrentSessionRequest(requestId)) {
+        return;
+      }
+
       activateMailbox(
         data.mailbox,
         isBrowserManagedMailboxSession(data.mailbox)
@@ -494,9 +591,15 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
           : `已创建 ${data.mailbox.providerLabel} 邮箱，系统正在同步最新收件箱。`
       );
     } catch (error) {
+      if (controller.signal.aborted || !isCurrentSessionRequest(requestId)) {
+        return;
+      }
+
       setNotice(error instanceof Error ? error.message : "创建邮箱失败");
     } finally {
-      setBusy(false);
+      if (isCurrentSessionRequest(requestId)) {
+        setBusy(false);
+      }
     }
   }
 
@@ -548,12 +651,17 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
       expiresAt: null,
       metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
     };
+    const { requestId, controller } = beginSessionRequest();
 
     setBusy(true);
     setNotice("正在校验你导入的邮箱会话...");
 
     try {
-      await validateImportedMailbox(importedMailbox);
+      await validateImportedMailbox(importedMailbox, controller.signal);
+      if (!isCurrentSessionRequest(requestId)) {
+        return;
+      }
+
       activateMailbox(
         importedMailbox,
         isImportedAddressUnverified(importedMailbox)
@@ -563,15 +671,23 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
       setImportAddressInput("");
       setImportTokenInput("");
     } catch (error) {
+      if (controller.signal.aborted || !isCurrentSessionRequest(requestId)) {
+        return;
+      }
+
       setNotice(error instanceof Error ? error.message : "导入会话校验失败");
     } finally {
-      setBusy(false);
+      if (isCurrentSessionRequest(requestId)) {
+        setBusy(false);
+      }
     }
   }
 
   function removeMailboxFromHistory(targetMailbox: MailboxSession) {
     setRecentMailboxes((current) => removeRecentMailbox(current, targetMailbox));
     if (mailbox && getMailboxIdentity(mailbox) === getMailboxIdentity(targetMailbox)) {
+      invalidateSessionRequest();
+      invalidateMailboxScopedRequests();
       setMailbox(null);
       setMessages([]);
       setActiveMessage(null);
@@ -600,13 +716,21 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
         return;
       }
 
+      const mailboxIdentity = getMailboxIdentity(targetMailbox);
+      const { requestId, mailboxScope, controller } = beginMailboxScopedRequest(refreshRequestRef, targetMailbox);
+
       setLoadingMessages(true);
       try {
         const response = await fetch(`/api/mailboxes/${targetMailbox.id}/messages`, {
           cache: "no-store",
+          signal: controller.signal,
           headers: buildMailboxRequestHeaders(targetMailbox),
         });
         const data = (await response.json()) as { messages?: MessageSummary[] } & ErrorLike;
+
+        if (!isCurrentMailboxScopedRequest(refreshRequestRef, requestId, mailboxScope, mailboxIdentity)) {
+          return;
+        }
 
         if (!response.ok || !data.messages) {
           const shouldDiscardMailbox =
@@ -617,7 +741,8 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
           if (shouldDiscardMailbox) {
             clearStoredMailbox();
             setRecentMailboxes((current) => removeRecentMailbox(current, targetMailbox));
-            setMailbox((current) => (current?.id === targetMailbox.id ? null : current));
+            invalidateMailboxScopedRequests();
+            setMailbox((current) => (current && getMailboxIdentity(current) === mailboxIdentity ? null : current));
             setMessages([]);
             setActiveMessage(null);
           }
@@ -641,12 +766,18 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
             : "收件箱当前为空，系统会继续自动刷新。"
         );
       } catch (error) {
+        if (controller.signal.aborted || !isCurrentMailboxScopedRequest(refreshRequestRef, requestId, mailboxScope, mailboxIdentity)) {
+          return;
+        }
+
         setNotice(error instanceof Error ? error.message : "收件箱拉取失败");
       } finally {
-        setLoadingMessages(false);
+        if (isCurrentMailboxScopedRequest(refreshRequestRef, requestId, mailboxScope, mailboxIdentity)) {
+          setLoadingMessages(false);
+        }
       }
     },
-    [buildMailboxRequestHeaders, clearStoredMailbox, mailbox]
+    [beginMailboxScopedRequest, buildMailboxRequestHeaders, clearStoredMailbox, invalidateMailboxScopedRequests, isCurrentMailboxScopedRequest, mailbox]
   );
 
   async function openMessage(messageId: string) {
@@ -654,13 +785,22 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
       return;
     }
 
+    const targetMailbox = mailbox;
+    const mailboxIdentity = getMailboxIdentity(targetMailbox);
+    const { requestId, mailboxScope, controller } = beginMailboxScopedRequest(openMessageRequestRef, targetMailbox);
+
     setLoadingMessageId(messageId);
     try {
-      const response = await fetch(`/api/mailboxes/${mailbox.id}/messages/${messageId}`, {
+      const response = await fetch(`/api/mailboxes/${targetMailbox.id}/messages/${messageId}`, {
         cache: "no-store",
-        headers: buildMailboxRequestHeaders(mailbox),
+        signal: controller.signal,
+        headers: buildMailboxRequestHeaders(targetMailbox),
       });
       const data = (await response.json()) as { message?: MessageDetail } & ErrorLike;
+
+      if (!isCurrentMailboxScopedRequest(openMessageRequestRef, requestId, mailboxScope, mailboxIdentity)) {
+        return;
+      }
 
       if (!response.ok || !data.message) {
         throw new Error(data.error?.message ?? "邮件读取失败");
@@ -669,9 +809,15 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
       setActiveMessage(data.message);
       setNotice("邮件详情已更新，HTML 内容会在隔离容器中显示。 ");
     } catch (error) {
+      if (controller.signal.aborted || !isCurrentMailboxScopedRequest(openMessageRequestRef, requestId, mailboxScope, mailboxIdentity)) {
+        return;
+      }
+
       setNotice(error instanceof Error ? error.message : "邮件读取失败");
     } finally {
-      setLoadingMessageId(null);
+      if (isCurrentMailboxScopedRequest(openMessageRequestRef, requestId, mailboxScope, mailboxIdentity)) {
+        setLoadingMessageId(null);
+      }
     }
   }
 
@@ -680,26 +826,41 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
       return;
     }
 
+    const targetMailbox = mailbox;
+    const mailboxIdentity = getMailboxIdentity(targetMailbox);
+    const { requestId, mailboxScope, controller } = beginMailboxScopedRequest(attachmentRequestRef, targetMailbox);
+
     setDownloadingAttachmentId(attachmentId);
     try {
-      const response = await fetch(`/api/mailboxes/${mailbox.id}/messages/${messageId}/attachments/${attachmentId}`, {
+      const response = await fetch(`/api/mailboxes/${targetMailbox.id}/messages/${messageId}/attachments/${attachmentId}`, {
         cache: "no-store",
+        signal: controller.signal,
         headers: {
-          ...buildMailboxRequestHeaders(mailbox),
+          ...buildMailboxRequestHeaders(targetMailbox),
           "x-tpmail-download-mode": "json",
         },
       });
 
       const data = (await response.json()) as { url?: string } & ErrorLike;
+      if (!isCurrentMailboxScopedRequest(attachmentRequestRef, requestId, mailboxScope, mailboxIdentity)) {
+        return;
+      }
+
       if (!response.ok || !data.url) {
         throw new Error(data.error?.message ?? "附件下载失败");
       }
 
       window.open(data.url, "_blank", "noopener,noreferrer");
     } catch (error) {
+      if (controller.signal.aborted || !isCurrentMailboxScopedRequest(attachmentRequestRef, requestId, mailboxScope, mailboxIdentity)) {
+        return;
+      }
+
       setNotice(error instanceof Error ? error.message : "附件下载失败");
     } finally {
-      setDownloadingAttachmentId(null);
+      if (isCurrentMailboxScopedRequest(attachmentRequestRef, requestId, mailboxScope, mailboxIdentity)) {
+        setDownloadingAttachmentId(null);
+      }
     }
   }
 
@@ -715,6 +876,10 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
       setNotice("复制邮箱地址失败，请手动复制。");
     }
   }
+
+  useEffect(() => {
+    mailboxRef.current = mailbox;
+  }, [mailbox]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -803,6 +968,7 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
 
   useEffect(() => {
     if (!mailbox) {
+      invalidateMailboxScopedRequests();
       return;
     }
 
@@ -811,8 +977,11 @@ export function AppShell({ initialProviders }: { initialProviders: ProviderDescr
       refreshMessages(mailbox);
     }, 15000);
 
-    return () => window.clearInterval(timer);
-  }, [mailbox, refreshMessages]);
+    return () => {
+      window.clearInterval(timer);
+      invalidateMailboxScopedRequests();
+    };
+  }, [invalidateMailboxScopedRequests, mailbox, refreshMessages]);
 
   useEffect(() => {
     let cancelled = false;
