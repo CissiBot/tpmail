@@ -18,8 +18,9 @@ The repository is currently a **single-package npm project**. The root `package.
 This project provides a unified entry point for integrating multiple temporary email providers, and supports the following flow in the browser:
 
 - View the list of available providers
-- Create a temporary mailbox session
+- Create a temporary mailbox session through a shared prefix / suffix / credential flow
 - Fetch inbox message lists
+- Switch and manage cached mailbox records through the top mailbox bar
 - View the plain text and HTML content of a single email
 - Enter attachment downloads through API routes
 
@@ -39,20 +40,21 @@ After startup, you can access the app locally. `.env.example` contains placehold
 
 - **Unified provider entry**: The server aggregates 7 provider IDs, and the frontend renders them through a shared contract.
 - **Server-side first screen injection**: The homepage calls `listProviders()` directly, avoiding an extra `/api/providers` request on the first screen.
-- **Single-page workspace**: `src/components/tpmail/app-shell.tsx` handles provider switching, mailbox creation, domain prefetching, recent mailbox history, importing existing sessions, message reading, attachment entry points, and email preview.
+- **Single-page workspace**: `src/components/tpmail/app-shell.tsx` handles provider switching, mailbox creation, domain prefetching, cached mailbox dropdowns, the record management modal, message reading, attachment entry points, and email preview.
 - **Create after domain prefetch**: After switching providers, the frontend first requests `/api/providers/[providerId]/domains` to get available suffixes.
+- **Compact mailbox creation panel**: The left-side address parameter area now focuses on mailbox prefix, mailbox suffix, the provider-specific credential field, and the create / random buttons.
 - **Browser-managed sessions**: `public_address`, token-based sessions, and mailboxes backed by user-supplied API keys are stored in the current browser whenever possible instead of relying on the server-side in-process `Map`.
-- **Recent mailbox history**: The browser keeps the latest 8 mailbox sessions and lets users switch or remove them quickly.
-- **Take over existing sessions**: Users can enter an existing mailbox address and pair it with a token or API key to continue the session in the current browser.
+- **Cached mailbox records**: The browser keeps the latest 8 mailbox sessions. The top mailbox bar provides a quick dropdown, while the management button opens a dedicated table modal with sorting, multi-select, and deletion.
 - **Bring-your-own API key**: `api_key` providers such as `inboxes` can now be used with a visitor's own API key instead of sharing an operator-managed secret.
-- **Automatic inbox refresh**: After a mailbox is created, the frontend polls the message list every 15 seconds, not through real-time push.
+- **Mailbox-bar refresh progress**: The top mailbox bar combines the address, copy action, cached-history entry points, management entry point, and refresh countdown into one area, with a filled 10-second progress indicator.
+- **Automatic inbox refresh**: After a mailbox is created, the frontend polls the message list every 10 seconds, not through real-time push.
 - **Dual-view reading**: The same email provides both a plain text reading area and an HTML iframe preview area.
 - **HTML sandbox isolation**: The HTML body is displayed through the `sandbox` mode of an `iframe`, reducing isolation risks introduced by previewing.
 - **Attachments still go through an API entry**: Attachments are resolved through the app's own route handler first, and the frontend opens the final upstream URL only after receiving it, so browser-managed credentials never need to appear in a query string.
 
 ## Architecture
 
-The main frontend workspace is concentrated in `src/components/tpmail/app-shell.tsx`. It prefers `duckmail` by default, as long as that provider is enabled. In this component, users complete provider selection, mailbox creation, recent mailbox switching, taking over existing token / API-key-backed sessions, message polling, opening individual emails, and accessing attachment download entry points.
+The main frontend workspace is concentrated in `src/components/tpmail/app-shell.tsx`. It prefers `duckmail` by default, as long as that provider is enabled. In this component, users complete provider selection, mailbox creation, domain suffix switching, top-bar mailbox history switching, record management modal actions, message polling, opening individual emails, and accessing attachment download entry points.
 
 The main backend flow is as follows:
 
@@ -75,13 +77,12 @@ Specifically:
 > The current implementation now has two state classes: provider caches and any mailbox sessions that still need server-side ownership stay in `src/server/tpmail/store.ts` through `globalThis + Map`, while `public_address` sessions, token-based sessions, and mailboxes backed by user-supplied API keys are primarily stored in browser `localStorage`. Neither side is persisted to a database, and neither is suitable for shared state across multiple instances.
 
 - Provider list cache, domain cache, and any server-managed mailbox sessions all stay in the current Node process memory and are not persisted.
-- Browser-managed mailbox snapshots, recent mailbox history, and user-supplied API keys stay only in the current browser and are not automatically synchronized to other devices or browser profiles.
+- Browser-managed mailbox snapshots, cached mailbox records, and user-supplied API keys stay only in the current browser and are not automatically synchronized to other devices or browser profiles.
 - `/api/providers` and `/api/providers/[providerId]/domains` return the `x-tpmail-cache` response header to indicate cache hits or misses.
 - When creating a mailbox, the backend validates the alias and only allows letters, numbers, dots, underscores, and hyphens.
 - If a request includes a domain, the service layer applies a whitelist check against the provider's available domains. For `api_key` providers, that validation now runs with the API key supplied by the current browser.
 - Attachment downloads are not static file serving. The attachment route handler resolves the upstream target first, and then the browser opens it explicitly.
 - HTML email preview uses a sandboxed iframe, and this content should not be treated as directly trusted rendering.
-- Imported token-based sessions can appear as an "unverified address" in the UI, meaning the mailbox address is user-supplied labeling while the upstream token is still the actual authority.
 
 ## Development
 
@@ -134,12 +135,12 @@ For browser-managed mailboxes, mailbox snapshots are sent back through request h
 ## Runtime Notes / Known Limitations
 
 - Homepage provider data comes from a direct server-side `listProviders()` call, so the first screen should not be understood as the frontend requesting `/api/providers` first.
-- Inbox updates rely on 15-second polling and do not include real-time push, WebSocket, or browser notification mechanisms.
+- Inbox updates rely on 10-second polling and do not include real-time push, WebSocket, or browser notification mechanisms.
 - Provider enablement can change as the code changes, so you should inspect each provider adapter's `descriptor.enabled` directly when checking status.
 - Server-managed mailbox sessions and provider caches still become invalid after a service restart, while browser-managed mailbox snapshots survive only inside the current browser.
 - Under multi-instance deployment, the current implementation does not provide shared-session or shared-cache consistency guarantees, and browser-managed mailbox history does not synchronize across instances either.
-- "Recent mailboxes" and "take over existing sessions" are browser-local features. Changing devices, changing browsers, or clearing local storage requires importing the session again.
-- Imported token-based sessions are validated once before they are added to recent history; if they later return 400 / 401 / 404 / 410, the browser removes them from the local list.
+- The top cached-mailbox dropdown and the management modal both depend on browser-local records. Changing devices, changing browsers, or clearing local storage requires recreating or restoring sessions.
+- Local record management currently supports switching, sorting, multi-select, and deletion, but not cross-browser synchronization or server-side persistence.
 - Whether attachments are available depends on whether the corresponding provider implements attachment URL resolution.
 
 ## Code Map
